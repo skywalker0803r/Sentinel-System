@@ -176,6 +176,10 @@ async def send_vegas_signals():
 @bot.event
 async def on_ready():
     print(f'已登入 Discord: {bot.user}')
-    bot.loop.create_task(send_vegas_signals())
+    # Run the signal collection task
+    await send_vegas_signals()
+    # Once the task is complete, close the bot gracefully
+    await bot.close()
 
-bot.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
