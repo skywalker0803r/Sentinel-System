@@ -139,20 +139,20 @@ async def send_vegas_signals():
         await channel.send("目前沒有符合 Vegas 通道轉折條件的交易對。")
         return
 
-    # 分多空，並按 compound_apr 排序
-    long_df = final_df[final_df['vegas_signal'].isin(['LONG_BREAKOUT','LONG_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
-    short_df = final_df[final_df['vegas_signal'].isin(['SHORT_BREAKDOWN','SHORT_FAILED_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
+    # 分多空，並按 compound_apr 排序0
+    long_df = final_df[final_df['vegas_signal'].isin(['LONG_BREAKOUT','LONG_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(10)
+    short_df = final_df[final_df['vegas_signal'].isin(['SHORT_BREAKDOWN','SHORT_FAILED_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(10)
 
     msg = "**Vegas 通道訊號**\n\n"
     if not long_df.empty:
-        msg += "**多頭訊號 (Top 5 by APR)**\n"
+        msg += "**多頭訊號 (Top 10 by APR)**\n"
         for _, row in long_df.iterrows():
-            msg += f"{row['symbol']} | Close: {row['close']} | Signal: {row['vegas_signal']} | APR: {row['compound_apr']:.2%}\n"
+            msg += f"{row['symbol']} | 收盤價: {row['close']} | 訊號: {row['vegas_signal']} | 年利率: {row['compound_apr']:.2%}\n"
         msg += "\n"
     if not short_df.empty:
-        msg += "**空頭訊號 (Top 5 by APR)**\n"
+        msg += "**空頭訊號 (Top 10 by APR)**\n"
         for _, row in short_df.iterrows():
-            msg += f"{row['symbol']} | Close: {row['close']} | Signal: {row['vegas_signal']} | APR: {row['compound_apr']:.2%}\n"
+            msg += f"{row['symbol']} | 收盤價: {row['close']} | 訊號: {row['vegas_signal']} | 年利率: {row['compound_apr']:.2%}\n"
 
     await channel.send(msg)
 
