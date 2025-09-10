@@ -1,11 +1,13 @@
+import os
 import requests
 import pandas as pd
 from tqdm import tqdm
 import discord
-import os
+import asyncio
+from discord.ext import commands
 from dotenv import load_dotenv
+
 load_dotenv()
-from discord.ext import tasks, commands
 
 # -------- API 與 Vegas 通道函數 --------
 def get_token_rate(symbol: str):
@@ -98,21 +100,17 @@ def detect_vegas_turning_points(df):
 
 # -------- Discord Bot 部分 --------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # 目標頻道 ID
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))  # 必須轉 int
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.event
-async def on_ready():
-    print(f'已登入 Discord: {bot.user}')
-    await send_vegas_signals()
-
-async def send_vegas_signals():
+# 同步收集 Vegas 訊號
+def collect_signals():
     symbols = get_all_symbols()
     all_signals = []
 
-    for s in tqdm(symbols[:]):
+    for s in tqdm(symbols[:200]):  # 可調整取多少交易對 (太多會很慢)
         df = get_klines(s, interval='1h', limit=700)
         df = detect_vegas_turning_points(df)
         if df is not None:
@@ -127,20 +125,23 @@ async def send_vegas_signals():
                 all_signals.append(signals_df)
 
     if not all_signals:
-        print("沒有符合 Vegas 通道轉折條件的交易對。")
-        return
+        return None
+    return pd.concat(all_signals, ignore_index=True)
 
-    final_df = pd.concat(all_signals, ignore_index=True)
-    
-    # 分多空，並按 compound_apr 排序
-    long_df = final_df[final_df['vegas_signal'].isin(['LONG_BREAKOUT','LONG_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
-    short_df = final_df[final_df['vegas_signal'].isin(['SHORT_BREAKDOWN','SHORT_FAILED_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
+# 非阻塞發送訊號
+async def send_vegas_signals():
+    loop = asyncio.get_running_loop()
+    final_df = await loop.run_in_executor(None, collect_signals)
 
     channel = bot.get_channel(CHANNEL_ID)
 
-    if long_df.empty and short_df.empty:
+    if final_df is None or final_df.empty:
         await channel.send("目前沒有符合 Vegas 通道轉折條件的交易對。")
         return
+
+    # 分多空，並按 compound_apr 排序
+    long_df = final_df[final_df['vegas_signal'].isin(['LONG_BREAKOUT','LONG_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
+    short_df = final_df[final_df['vegas_signal'].isin(['SHORT_BREAKDOWN','SHORT_FAILED_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
 
     msg = "**Vegas 通道訊號**\n\n"
     if not long_df.empty:
@@ -154,5 +155,10 @@ async def send_vegas_signals():
             msg += f"{row['symbol']} | Close: {row['close']} | Signal: {row['vegas_signal']} | APR: {row['compound_apr']:.2%}\n"
 
     await channel.send(msg)
+
+@bot.event
+async def on_ready():
+    print(f'已登入 Discord: {bot.user}')
+    asyncio.create_task(send_vegas_signals())  # 啟動背景任務
 
 bot.run(DISCORD_TOKEN)
