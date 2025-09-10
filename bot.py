@@ -110,7 +110,7 @@ def collect_signals():
     symbols = get_all_symbols()
     all_signals = []
 
-    for s in tqdm(symbols[:200]):  # 可調整取多少交易對 (太多會很慢)
+    for s in tqdm(symbols[:]):  # 可調整取多少交易對 (太多會很慢)
         df = get_klines(s, interval='1h', limit=700)
         df = detect_vegas_turning_points(df)
         if df is not None:
