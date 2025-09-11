@@ -15,6 +15,7 @@ semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
 
 # -------- API 與 Vegas 通道函數 (非同步版本) --------
 async def get_all_symbols_async(session):
+    await asyncio.sleep(0.1) # 在每個請求後增加 0.1 秒延遲
     url = "https://api.gateio.ws/api/v4/spot/currency_pairs"
     try:
         async with session.get(url) as r:
@@ -50,6 +51,7 @@ async def get_klines_async(session, symbol, interval='1h', limit=700):
 async def get_token_rate_async(session, symbol: str):
     # 使用 semaphore 來控制並發數
     async with semaphore:
+        await asyncio.sleep(0.1) # 在每個請求後增加 0.1 秒延遲
         host = "https://api.gateio.ws"
         prefix = "/api/v4"
         url = '/loan/multi_collateral/current_rate'
