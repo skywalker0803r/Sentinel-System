@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Define a semaphore to limit concurrent requests
-SEMAPHORE_LIMIT = 50
+SEMAPHORE_LIMIT = 10
 semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
 
 # -------- API 與 Vegas 通道函數 (非同步版本) --------
@@ -25,26 +25,37 @@ async def get_all_symbols_async(session):
         print(f"取得交易對失敗: {e}")
         return []
 
-async def get_klines_async(session, symbol, interval='1h', limit=700):
-    # 使用 semaphore 來控制並發數
+async def get_klines_async(session, symbol, interval='1h', limit=700, retries=3, backoff_factor=1.0):
+    # Use semaphore to control concurrency
     async with semaphore:
-        url = f"https://api.gateio.ws/api/v4/spot/candlesticks"
-        params = {'currency_pair': symbol, 'interval': interval, 'limit': limit}
-        try:
-            async with session.get(url, params=params) as r:
-                r.raise_for_status()
-                data = await r.json()
-                if not data:
+        for attempt in range(retries):
+            await asyncio.sleep(0.1) # 在每個請求後增加 0.1 秒延遲
+            url = "https://api.gateio.ws/api/v4/spot/candlesticks"
+            params = {'currency_pair': symbol, 'interval': interval, 'limit': limit}
+            try:
+                async with session.get(url, params=params) as r:
+                    r.raise_for_status()
+                    data = await r.json()
+                    if not data:
+                        return None
+                    df = pd.DataFrame(data)
+                    df.columns = ['time', 'volume', 'close', 'high', 'low', 'open', 'quote_volume', 'trades']
+                    for col in ['open', 'high', 'low', 'close']:
+                        df[col] = df[col].astype(float)
+                    return df
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:
+                    wait_time = backoff_factor * (2 ** attempt)
+                    print(f"取得 {symbol} K線失敗: 429 Too Many Requests. 在 {wait_time:.2f} 秒後重試...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"{symbol} K線取得失敗: {e}")
                     return None
-                df = pd.DataFrame(data)
-                df.columns = ['time', 'volume', 'close', 'high', 'low', 'open', 'quote_volume', 'trades']
-                for col in ['open', 'high', 'low', 'close']:
-                    df[col] = df[col].astype(float)
-                return df
-        except Exception as e:
-            # 捕獲並處理 API 錯誤
-            print(f"{symbol} K線取得失敗: {e}")
-            return None
+            except Exception as e:
+                print(f"{symbol} K線取得失敗: {e}")
+                return None
+        print(f"已達 {symbol} K線取得最大重試次數，放棄。")
+        return None
 
 async def get_token_rate_async(session, symbol: str):
     # 使用 semaphore 來控制並發數
