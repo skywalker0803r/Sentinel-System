@@ -6,7 +6,7 @@ from tqdm import tqdm
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from aiolimiter import AsyncLimiter  # 導入 aiolimiter
+from aiolimiter import AsyncLimiter
 
 load_dotenv()
 
@@ -136,19 +136,16 @@ async def collect_signals_async():
     async with aiohttp.ClientSession() as session:
         symbols = await get_all_symbols_async(session)
         
-        kline_tasks = [get_klines_async(session, s) for s in symbols]
-        klines = await asyncio.gather(*tqdm(kline_tasks, desc="收集 K 線資料"))
-
         all_signals = []
-        # 過濾掉 K 線取得失敗的 None 值
-        for df, symbol in tqdm(zip(klines, symbols), total=len(symbols), desc="偵測 Vegas 訊號"):
-            if df is None:
-                continue
-            signals_df = detect_vegas_turning_points(df)
-            if signals_df is not None and not signals_df[signals_df['vegas_signal'].notna()].empty:
-                signals_df = signals_df[signals_df['vegas_signal'].notna()].copy()
-                signals_df['symbol'] = symbol
-                all_signals.append(signals_df)
+        # Process symbols one by one to avoid high memory usage
+        for symbol in tqdm(symbols, desc="收集並處理 Vegas 訊號"):
+            df = await get_klines_async(session, symbol)
+            if df is not None:
+                signals_df = detect_vegas_turning_points(df)
+                if signals_df is not None and not signals_df[signals_df['vegas_signal'].notna()].empty:
+                    signals_df = signals_df[signals_df['vegas_signal'].notna()].copy()
+                    signals_df['symbol'] = symbol
+                    all_signals.append(signals_df)
 
         if not all_signals:
             return None
