@@ -138,7 +138,7 @@ async def collect_signals_async():
         
         all_signals = []
         # Process symbols one by one to avoid high memory usage
-        for symbol in tqdm(symbols, desc="收集並處理 Vegas 訊號"):
+        for symbol in tqdm(symbols[:200], desc="收集並處理 Vegas 訊號"):
             df = await get_klines_async(session, symbol)
             if df is not None:
                 signals_df = detect_vegas_turning_points(df)
@@ -166,31 +166,103 @@ async def send_vegas_signals():
         print(f"無法找到頻道 ID: {CHANNEL_ID}")
         return
 
-    await channel.send("正在分析 Vegas 通道訊號，請稍候...")
+    # 發送分析中的訊息
+    analyzing_embed = discord.Embed(
+        title="🔍 Vegas 通道分析中...",
+        description="正在掃描所有交易對並計算技術指標，請稍候...",
+        color=0xFFD700  # 金色
+    )
+    analyzing_embed.set_footer(text="預計需要 1-2 分鐘完成分析")
+    await channel.send(embed=analyzing_embed)
 
     final_df = await collect_signals_async()
 
     if final_df is None or final_df.empty:
-        await channel.send("目前沒有符合 Vegas 通道轉折條件的交易對。")
+        no_signals_embed = discord.Embed(
+            title="📊 Vegas 通道分析結果",
+            description="目前沒有符合 Vegas 通道轉折條件的交易對。",
+            color=0x808080  # 灰色
+        )
+        no_signals_embed.set_footer(text="建議稍後再次檢查")
+        await channel.send(embed=no_signals_embed)
         return
 
-    long_df = final_df[final_df['vegas_signal'].isin(['LONG_BREAKOUT', 'LONG_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(10)
-    short_df = final_df[final_df['vegas_signal'].isin(['SHORT_BREAKDOWN', 'SHORT_FAILED_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(10)
+    long_df = final_df[final_df['vegas_signal'].isin(['LONG_BREAKOUT', 'LONG_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
+    short_df = final_df[final_df['vegas_signal'].isin(['SHORT_BREAKDOWN', 'SHORT_FAILED_BOUNCE'])].sort_values(by='compound_apr', ascending=False).head(5)
 
-    msg = "**Vegas 通道訊號**\n\n"
+    # 創建主要結果 Embed
+    main_embed = discord.Embed(
+        title="📈 Vegas 通道訊號分析",
+        description="基於 EMA144/169 通道的技術分析結果",
+        color=0x00FF00  # 綠色
+    )
+    
+    # 添加統計信息
+    total_signals = len(final_df)
+    long_count = len(long_df)
+    short_count = len(short_df)
+    
+    main_embed.add_field(
+        name="📊 訊號統計",
+        value=f"```\n總訊號數: {total_signals}\n多頭訊號: {long_count}\n空頭訊號: {short_count}```",
+        inline=False
+    )
+
+    # 多頭訊號部分
     if not long_df.empty:
-        msg += "**多頭訊號 (Top 10 by APR)**\n"
-        for _, row in long_df.iterrows():
+        long_signals = []
+        for i, (_, row) in enumerate(long_df.iterrows(), 1):
+            signal_emoji = "🚀" if row['vegas_signal'] == 'LONG_BREAKOUT' else "⬆️"
+            signal_name = "突破" if row['vegas_signal'] == 'LONG_BREAKOUT' else "反彈"
             apr_str = f"{row['compound_apr']:.2%}" if pd.notna(row['compound_apr']) else "N/A"
-            msg += f"{row['symbol']} | 收盤價: {row['close']} | 訊號: {row['vegas_signal']} | 年利率: {apr_str}\n"
-        msg += "\n"
-    if not short_df.empty:
-        msg += "**空頭訊號 (Top 10 by APR)**\n"
-        for _, row in short_df.iterrows():
-            apr_str = f"{row['compound_apr']:.2%}" if pd.notna(row['compound_apr']) else "N/A"
-            msg += f"{row['symbol']} | 收盤價: {row['close']} | 訊號: {row['vegas_signal']} | 年利率: {apr_str}\n"
+            
+            long_signals.append(
+                f"`{i:2d}.` **{row['symbol']}** {signal_emoji}\n"
+                f"     💰 價格: `${row['close']:.6f}`\n"
+                f"     📊 類型: `{signal_name}`\n"
+                f"     🏦 年利率: `{apr_str}`"
+            )
+        
+        long_text = "\n\n".join(long_signals)
+        main_embed.add_field(
+            name="🟢 多頭訊號 (前5名 by APR)",
+            value=long_text,
+            inline=True
+        )
 
-    await channel.send(msg)
+    # 空頭訊號部分
+    if not short_df.empty:
+        short_signals = []
+        for i, (_, row) in enumerate(short_df.iterrows(), 1):
+            signal_emoji = "📉" if row['vegas_signal'] == 'SHORT_BREAKDOWN' else "⬇️"
+            signal_name = "跌破" if row['vegas_signal'] == 'SHORT_BREAKDOWN' else "失敗反彈"
+            apr_str = f"{row['compound_apr']:.2%}" if pd.notna(row['compound_apr']) else "N/A"
+            
+            short_signals.append(
+                f"`{i:2d}.` **{row['symbol']}** {signal_emoji}\n"
+                f"     💰 價格: `${row['close']:.6f}`\n"
+                f"     📊 類型: `{signal_name}`\n"
+                f"     🏦 年利率: `{apr_str}`"
+            )
+        
+        short_text = "\n\n".join(short_signals)
+        main_embed.add_field(
+            name="🔴 空頭訊號 (前5名 by APR)",
+            value=short_text,
+            inline=True
+        )
+
+    # 添加說明和時間戳
+    main_embed.add_field(
+        name="ℹ️ 使用說明",
+        value="```\n🚀 突破: 價格突破 Vegas 通道上方\n⬆️ 反彈: 在通道上方獲得支撐\n📉 跌破: 價格跌破 Vegas 通道下方\n⬇️ 失敗反彈: 反彈失敗轉為空頭```",
+        inline=False
+    )
+    
+    main_embed.set_footer(text="⚠️ 僅供參考，請自行評估風險 | Vegas 通道基於 EMA144/169")
+    main_embed.timestamp = discord.utils.utcnow()
+
+    await channel.send(embed=main_embed)
 
 @bot.event
 async def on_ready():
