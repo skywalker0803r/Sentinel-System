@@ -1,75 +1,204 @@
-# Sentinel-System - Vegas 通道加密貨幣交易訊號機器人
+# Sentinel-System - Vegas 通道 + Smart Money Concepts 加密貨幣交易訊號機器人
 
-## 專案簡介
+## 🎯 專案簡介
 
-Sentinel-System 是一個基於 Python 開發的 Discord 機器人，旨在為加密貨幣交易者提供自動化的「Vegas 通道」交易訊號分析與通知服務。它透過連接 Gate.io 交易所的 API，獲取實時的市場數據，並運用 Vegas 通道策略識別潛在的交易機會，隨後將分析結果發送到指定的 Discord 頻道。
+Sentinel-System 是一個高度集成的 Discord 交易機器人，結合了 **Vegas 通道** 和 **Smart Money Concepts (SMC)** 兩大技術分析體系，為加密貨幣交易者提供專業級的多重確認交易訊號。透過 Gate.io API 獲取實時市場數據，運用 APY 智能篩選和綜合評分系統，自動識別高潛力的交易機會。
 
-## 功能特色
+## ✨ 核心功能特色
 
-*   **Gate.io 數據整合**：自動從 Gate.io API 獲取加密貨幣的 K 線數據和借貸年化利率 (APR)。
-*   **Vegas 通道策略分析**：
-    *   計算多個指數移動平均線 (EMA)，包括 EMA12, EMA144, EMA169, EMA576, EMA676。
-    *   識別四種關鍵的 Vegas 通道轉折訊號：
-        *   `LONG_BREAKOUT` (多頭突破)
-        *   `LONG_BOUNCE` (多頭反彈)
-        *   `SHORT_BREAKDOWN` (空頭跌破)
-        *   `SHORT_FAILED_BOUNCE` (空頭反彈失敗)
-*   **Discord 實時通知**：
-    *   自動將分析出的 Top 5 多頭和 Top 5 空頭訊號（依 APR 排序）發送到指定的 Discord 頻道。
-    *   訊息包含交易對、收盤價、訊號類型和年化利率等詳細資訊。
-*   **自動化運行**：機器人啟動後會自動執行數據獲取、分析和通知流程。
+### 🔥 雙重技術分析系統
+- **Vegas 通道策略**：基於 EMA12/144/169 的經典突破反彈系統
+- **Smart Money Concepts**：機構級價格行為分析
+- **多重確認機制**：Vegas + SMC 雙重驗證，提高訊號可靠性
 
-## 安裝與設定
+### 🧠 Smart Money Concepts 完整功能
+- **🏗️ 市場結構 (Market Structure)**
+  - BOS (Break of Structure) - 結構突破檢測
+  - CHoCH (Change of Character) - 趨勢轉變檢測
+- **📦 Order Blocks (機構訂單區塊)**
+  - 智能識別機構大單區域
+  - 活躍/失效狀態實時監控
+- **💎 Fair Value Gaps (公允價值缺口)**
+  - 價格缺口自動檢測
+  - 填補狀態追踪
+- **⚖️ Equal Highs/Lows (等高點/等低點)**
+  - 關鍵支撐阻力位識別
+- **⚡ 流動性掃蕩 (Liquidity Sweeps)**
+  - 假突破/假跌破檢測
+  - 市場操縱模式識別
+- **🎯 Premium/Discount 價格區間**
+  - 🔴 **高價區 (70-100%)**: 賣出/止盈區域
+  - 🟢 **低價區 (0-30%)**: 買入/加倉區域
+  - 🟡 **平衡區 (30-70%)**: 觀望區域
+
+### 📊 智能篩選與評分系統
+- **APY 智能篩選**：自動篩選前 20% 高 APY 幣種（通常為低點潛力標的）
+- **綜合評分 (0-100分)**：
+  - Vegas 通道：25分（突破）/ 15分（反彈）
+  - SMC 結構：15分（BOS）/ 20分（CHoCH）
+  - Order Blocks：最高 15分
+  - Fair Value Gaps：最高 10分
+  - 流動性掃蕩：最高 10分
+  - 高年利率：最高 10分
+
+### 🏆 分層訊號展示
+- **TOP 10 做多推薦**：專注高潛力多頭機會
+- **動態分割顯示**：避免 Discord 字符限制
+- **詳細價格區間**：每個幣種顯示具體高價區和低價區
+- **評分明細**：透明化評分邏輯，便於理解
+
+### 🚀 高性能技術架構
+- **非同步處理**：高效並發 API 調用
+- **智能速率控制**：遵守 Gate.io API 限制
+- **記憶體優化**：逐一處理避免記憶體溢出
+- **錯誤容錯**：完整異常處理機制
+
+## 📁 專案結構
+
+```
+Sentinel-System/
+├── bot.py                    # 主要機器人程式
+├── smc_indicators.py         # SMC 核心分析器
+├── smc_config.py            # SMC 配置參數
+├── requirements.txt         # Python 依賴包
+├── .env                     # 環境變數配置
+├── README.md               # 專案說明文件
+├── SMC_Integration_Summary.md        # SMC 整合報告
+├── SMC_Price_Zones_Enhancement.md   # 價格區間功能說明
+└── Discord_Field_Limit_Fix.md       # Discord 限制修復說明
+```
+
+## 🛠️ 安裝與設定
 
 ### 1. 環境準備
-
-確保您的系統已安裝 Python 3.8 或更高版本。
+確保您的系統已安裝 **Python 3.8+**
 
 ### 2. 安裝依賴
-
-使用 `requirements.txt` 安裝所有必要的 Python 函式庫：
-
 ```bash
+git clone https://github.com/your-repo/Sentinel-System
+cd Sentinel-System
 pip install -r requirements.txt
 ```
 
-### 3. Discord 機器人設定
-
-1.  **創建 Discord 應用程式與機器人**：
-    *   前往 [Discord Developer Portal](https://discord.com/developers/applications)。
-    *   點擊 `New Application` 創建一個新的應用程式。
-    *   在應用程式頁面左側導航欄中選擇 `Bot`，然後點擊 `Add Bot`。
-    *   啟用 `Message Content Intent` (在 `Privileged Gateway Intents` 下)。
-    *   複製您的機器人 `TOKEN`。
-2.  **獲取頻道 ID**：
-    *   在您的 Discord 伺服器中，開啟開發者模式 (使用者設定 -> 進階 -> 開發者模式)。
-    *   右鍵點擊您希望機器人發送訊息的頻道，選擇 `複製 ID`。
-
-### 4. 配置 `bot.py`
-
-打開 `bot.py` 檔案，並將以下變數替換為您自己的值：
-
-```python
-DISCORD_TOKEN = "您的 Discord 機器人 TOKEN"  # 替換為您複製的機器人 TOKEN
-CHANNEL_ID = 您的頻道 ID  # 替換為您複製的 Discord 頻道 ID
+### 3. 環境變數設定
+創建 `.env` 文件並配置：
+```env
+DISCORD_TOKEN=你的Discord機器人TOKEN
+CHANNEL_ID=你的Discord頻道ID
 ```
 
+### 4. Discord 機器人設定
+1. 前往 [Discord Developer Portal](https://discord.com/developers/applications)
+2. 創建新應用程式 → Bot → 複製 TOKEN
+3. 啟用 `Message Content Intent`
+4. 在伺服器中啟用開發者模式，複製頻道 ID
+
 ### 5. 運行機器人
-
-在專案根目錄下運行 `bot.py`：
-
 ```bash
 python bot.py
 ```
 
-機器人啟動後，將會自動連接到 Discord 並開始發送 Vegas 通道訊號。
+## 📋 使用說明
 
-## 使用說明
+### 自動運行模式
+機器人啟動後會自動執行：
+1. **APY 篩選**：掃描所有 USDT 交易對，篩選前 20% 高 APY 幣種
+2. **技術分析**：對篩選後的幣種進行 Vegas + SMC 雙重分析
+3. **訊號評分**：計算每個訊號的綜合評分
+4. **結果推送**：將 TOP 10 做多推薦發送到 Discord
 
-機器人啟動後，會自動在指定的 Discord 頻道發送分析結果。您無需手動輸入任何指令。它會定期（根據程式碼邏輯，目前是在啟動時執行一次 `send_vegas_signals`）發送最新的訊號。
+### Discord 顯示範例
+```
+🚀 TOP 10 做多訊號分析
+專注做多機會 - Vegas 通道 + Smart Money Concepts
 
-## 注意事項
+📊 做多訊號統計
+做多訊號數: 10
+Vegas+SMC: 8
+純SMC訊號: 2
+平均評分: 65.2/100
 
-*   本專案僅供學習和參考，不構成任何投資建議。加密貨幣市場波動性大，請謹慎投資。
-*   請妥善保管您的 Discord 機器人 TOKEN，切勿洩露。
-*   Gate.io API 的使用可能會有頻率限制，請注意遵守其使用條款。
+🏆 TOP 做多推薦 (1-2)
+🥇 1. SPA_USDT 🚀 75分
+💰 $0.010768 | 📊 向上突破 | 🏦 10.58%
+🎯 趨勢轉變 | 3個大單區 | 大戶洗盤 | 🟡平衡區
+🔴$0.012500-$0.013200 🟢$0.008900-$0.009600
+📊 評分明細: 技術突破: 25分 | 趨勢轉變: 20分 | 大單區: 15分
+
+🥈 2. UNFI_USDT 🚀 72分
+💰 $0.224800 | 📊 向上突破 | 🏦 7.83%
+🎯 突破確認 | 5個大單區 | 2個價格缺口 | 🔴高價區
+🔴$0.280000-$0.295000 🟢$0.180000-$0.195000
+📊 評分明細: 技術突破: 25分 | 突破確認: 15分 | 大單區: 15分
+```
+
+## 🎨 進階功能
+
+### SMC 價格區間分析
+- **動態計算**：基於最新 100 根 K 線數據
+- **實時更新**：每次分析使用最新市場數據
+- **精確定位**：提供具體價格範圍而非模糊描述
+
+### 多重訊號確認
+- **Vegas 主導**：傳統 Vegas 通道作為主要訊號
+- **SMC 增強**：SMC 指標提供額外確認
+- **純 SMC 模式**：當 Vegas 無訊號時，檢測純 SMC 機會
+
+### 智能評分系統
+評分考慮多個維度：
+- 技術訊號強度
+- 市場結構變化
+- 機構行為指標
+- 流動性狀況
+- 年化利率吸引力
+
+## 📊 技術指標說明
+
+### Vegas 通道訊號
+- **🚀 向上突破 (LONG_BREAKOUT)**: 價格突破 Vegas 通道上軌
+- **⬆️ 向上反彈 (LONG_BOUNCE)**: 價格在上軌獲得支撐反彈
+- **📉 向下跌破 (SHORT_BREAKDOWN)**: 價格跌破 Vegas 通道下軌
+- **⬇️ 失敗反彈 (SHORT_FAILED_BOUNCE)**: 下軌反彈失敗
+
+### SMC 關鍵概念
+- **BOS (Break of Structure)**: 市場結構突破，趨勢延續訊號
+- **CHoCH (Change of Character)**: 趨勢性格改變，轉勢訊號
+- **Order Block**: 機構大單留下的價格區域，常成為強支撐/阻力
+- **Fair Value Gap**: 價格快速移動留下的缺口，具有磁性效應
+- **Liquidity Sweep**: 機構掃蕩散戶止損後反向操作
+
+## ⚠️ 風險提示與免責聲明
+
+- **教育目的**：本專案僅供學習和技術分析參考
+- **非投資建議**：所有訊號和分析不構成投資建議
+- **市場風險**：加密貨幣市場波動巨大，請謹慎投資
+- **自主判斷**：使用者應結合自身情況做出獨立判斷
+- **API 限制**：請遵守 Gate.io API 使用條款和頻率限制
+
+## 🔧 開發者資訊
+
+### 自定義配置
+您可以在 `smc_config.py` 中調整：
+- SMC 指標參數
+- 評分權重
+- 顯示閾值
+- 時間週期設定
+
+### 擴展開發
+專案採用模組化設計，易於擴展：
+- 添加新的技術指標
+- 自定義評分邏輯
+- 整合其他交易所 API
+- 實現多時間框架分析
+
+## 📞 支援與貢獻
+
+如有問題或建議，歡迎：
+- 提交 Issue
+- 發起 Pull Request
+- 參與討論和改進
+
+---
+
+**⚡ Powered by Vegas Channel & Smart Money Concepts**  
+**🚀 專業級加密貨幣交易訊號系統**
