@@ -386,10 +386,14 @@ async def send_enhanced_signals():
             # 獲取 SMC 亮點
             smc_highlights = get_smc_highlights(row.get('smc_data', {}))
             
+            # 獲取評分明細
+            score_breakdown = format_score_breakdown(row.get('score_factors', {}))
+            
             tier1_signals.append(
                 f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
                 f"     💰 `${row['close']:.6f}` | 📊 `{signal_name}` | 🏦 `{apr_str}`\n"
-                f"     🎯 {smc_highlights}"
+                f"     🎯 {smc_highlights}\n"
+                f"     📊 **評分明細**: {score_breakdown}"
             )
         
         tier1_text = "\n\n".join(tier1_signals)
@@ -408,11 +412,15 @@ async def send_enhanced_signals():
             apr_str = f"{row['compound_apr']:.2%}" if pd.notna(row['compound_apr']) else "N/A"
             score = row['signal_score']
             
+            # 簡化的評分明細
+            score_breakdown = format_score_breakdown(row.get('score_factors', {}))
+            
             tier2_signals.append(
-                f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分` | `{apr_str}`"
+                f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分` | `{apr_str}`\n"
+                f"     📊 {score_breakdown}"
             )
         
-        tier2_text = "\n".join(tier2_signals)
+        tier2_text = "\n\n".join(tier2_signals)
         main_embed.add_field(
             name="🥈 Tier 2: 中信心訊號 (50-69分)",
             value=tier2_text,
@@ -427,9 +435,15 @@ async def send_enhanced_signals():
             signal_emoji = get_signal_emoji(signal_type)
             score = row['signal_score']
             
-            tier3_signals.append(f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`")
+            # 簡化的評分明細
+            score_breakdown = format_score_breakdown(row.get('score_factors', {}))
+            
+            tier3_signals.append(
+                f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
+                f"     📊 {score_breakdown}"
+            )
         
-        tier3_text = "\n".join(tier3_signals)
+        tier3_text = "\n\n".join(tier3_signals)
         main_embed.add_field(
             name="🥉 Tier 3: 觀察清單 (30-49分)",
             value=tier3_text,
@@ -511,6 +525,47 @@ def get_smc_highlights(smc_data):
         highlights.append(f'{zone_emoji}{current_zone.lower()}')
     
     return ' | '.join(highlights) if highlights else '基礎分析'
+
+def format_score_breakdown(score_factors):
+    """格式化評分明細"""
+    if not score_factors:
+        return "無評分資料"
+    
+    breakdown_parts = []
+    
+    # Vegas 通道評分
+    if 'vegas_breakout' in score_factors:
+        breakdown_parts.append(f"Vegas突破: {score_factors['vegas_breakout']}分")
+    elif 'vegas_bounce' in score_factors:
+        breakdown_parts.append(f"Vegas反彈: {score_factors['vegas_bounce']}分")
+    
+    # SMC 結構評分
+    if 'smc_bos' in score_factors:
+        breakdown_parts.append(f"BOS: {score_factors['smc_bos']}分")
+    if 'smc_choch' in score_factors:
+        breakdown_parts.append(f"CHoCH: {score_factors['smc_choch']}分")
+    
+    # Order Blocks 評分
+    if 'order_blocks' in score_factors:
+        breakdown_parts.append(f"OB: {score_factors['order_blocks']}分")
+    
+    # Fair Value Gaps 評分
+    if 'fair_value_gaps' in score_factors:
+        breakdown_parts.append(f"FVG: {score_factors['fair_value_gaps']}分")
+    
+    # 流動性掃蕩評分
+    if 'liquidity_sweeps' in score_factors:
+        breakdown_parts.append(f"流動性: {score_factors['liquidity_sweeps']}分")
+    
+    # APR 評分
+    if 'high_apr' in score_factors:
+        breakdown_parts.append(f"高APR: {score_factors['high_apr']}分")
+    elif 'medium_apr' in score_factors:
+        breakdown_parts.append(f"中APR: {score_factors['medium_apr']}分")
+    elif 'low_apr' in score_factors:
+        breakdown_parts.append(f"低APR: {score_factors['low_apr']}分")
+    
+    return " | ".join(breakdown_parts) if breakdown_parts else "基礎評分"
 
 @bot.event
 async def on_ready():
