@@ -524,8 +524,8 @@ async def send_enhanced_signals(filter_promising=True):
             apr_str = f"{row['compound_apr']:.2%}" if pd.notna(row['compound_apr']) else "N/A"
             score = row['signal_score']
             
-            # 獲取 SMC 亮點
-            smc_highlights = get_smc_highlights(row.get('smc_data', {}))
+            # 獲取 SMC 亮點和價格區間
+            smc_highlights, zone_info = get_smc_highlights(row.get('smc_data', {}))
             
             # 獲取評分明細
             score_breakdown = format_score_breakdown(row.get('score_factors', {}))
@@ -539,43 +539,50 @@ async def send_enhanced_signals(filter_promising=True):
             elif i == 3:
                 rank_emoji = "🥉 "
             
+            # 格式化價格區間信息（簡化格式以節省字符）
+            zone_display = ""
+            if zone_info:
+                zone_display = f"\n     🔴`{zone_info['high_price_zone']}` 🟢`{zone_info['low_price_zone']}`"
+            
             top_signals.append(
                 f"{rank_emoji}`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
                 f"     💰 `${row['close']:.6f}` | 📊 `{signal_name}` | 🏦 `{apr_str}`\n"
-                f"     🎯 {smc_highlights}\n"
+                f"     🎯 {smc_highlights}{zone_display}\n"
                 f"     📊 **評分明細**: {score_breakdown}"
             )
         
-        # 如果訊號太多，分成兩個field顯示
-        if len(top_signals) <= 5:
-            top_text = "\n\n".join(top_signals)
-            main_embed.add_field(
-                name="🏆 TOP 10 做多推薦",
-                value=top_text,
-                inline=False
-            )
-        else:
-            # 前5名
-            top5_text = "\n\n".join(top_signals[:5])
-            main_embed.add_field(
-                name="🏆 TOP 5 做多推薦",
-                value=top5_text,
-                inline=False
-            )
+        # 將訊號分成多個 field，每個 field 最多2個訊號以確保不超過 Discord 1024 字符限制
+        signals_per_field = 2
+        for i in range(0, len(top_signals), signals_per_field):
+            field_signals = top_signals[i:i+signals_per_field]
+            field_content = "\n\n".join(field_signals)
             
-            # 6-10名
-            if len(top_signals) > 5:
-                next5_text = "\n\n".join(top_signals[5:])
-                main_embed.add_field(
-                    name="📈 第6-10名 做多推薦",
-                    value=next5_text,
-                    inline=False
-                )
+            # 設定 field 名稱
+            start_num = i + 1
+            end_num = min(i + signals_per_field, len(top_signals))
+            
+            if i == 0:
+                field_name = f"🏆 TOP 做多推薦 ({start_num}-{end_num})"
+            else:
+                field_name = f"📈 做多推薦 ({start_num}-{end_num})"
+            
+            main_embed.add_field(
+                name=field_name,
+                value=field_content,
+                inline=False
+            )
 
     # 添加說明
     main_embed.add_field(
         name="ℹ️ 做多訊號評分說明",
         value="```\n🚀 技術突破: 25分 | ⬆️ 技術反彈: 15分\n🔥 機構看漲訊號: 依強度評分\n🏗️ 突破確認: 15分 | 趨勢轉變: 20分\n📦 機構大單區: 最高15分\n💎 價格缺口: 最高10分\n⚡ 大戶洗盤: 最高10分\n💰 借貸年利率: 最高10分```",
+        inline=False
+    )
+    
+    # 添加 SMC 價格區間說明
+    main_embed.add_field(
+        name="📊 SMC 價格區間說明",
+        value="```\n🔴 高價區: 70%-100% 價格範圍 (賣出區域)\n🟢 低價區: 0%-30% 價格範圍 (買入區域)\n🟡 平衡區: 30%-70% 價格範圍 (觀望區域)\n\n基於過去100根K線的高低點計算\n適合設定止盈止損參考點位```",
         inline=False
     )
     
@@ -611,9 +618,10 @@ def get_signal_name(signal_type):
 def get_smc_highlights(smc_data):
     """獲取 SMC 分析亮點（中文化）"""
     if not smc_data:
-        return "基礎分析"
+        return "基礎分析", {}
     
     highlights = []
+    zone_info = {}
     
     # 檢查市場結構
     structure = smc_data.get('market_structure', {})
@@ -639,7 +647,7 @@ def get_smc_highlights(smc_data):
     if sweeps:
         highlights.append('大戶洗盤')
     
-    # 檢查當前區域
+    # 檢查當前區域並獲取價格信息
     zones = smc_data.get('premium_discount', {})
     current_zone = zones.get('current_zone', '')
     if current_zone:
@@ -651,8 +659,18 @@ def get_smc_highlights(smc_data):
         zone_name = zone_map.get(current_zone, '')
         if zone_name:
             highlights.append(zone_name)
+            
+        # 提取價格區間信息
+        premium_zone = zones.get('premium_zone', {})
+        discount_zone = zones.get('discount_zone', {})
+        if premium_zone and discount_zone:
+            zone_info = {
+                'high_price_zone': f"${premium_zone.get('start', 0):.6f}-${premium_zone.get('end', 0):.6f}",
+                'low_price_zone': f"${discount_zone.get('start', 0):.6f}-${discount_zone.get('end', 0):.6f}",
+                'current_zone': zone_name
+            }
     
-    return ' | '.join(highlights) if highlights else '基礎分析'
+    return ' | '.join(highlights) if highlights else '基礎分析', zone_info
 
 def format_score_breakdown(score_factors):
     """格式化評分明細（中文化）"""
