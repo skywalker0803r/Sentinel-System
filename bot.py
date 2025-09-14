@@ -27,17 +27,132 @@ semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
 smc_analyzer = SmartMoneyConceptsAnalyzer()
 
 # -------- API 與 Vegas 通道函數 (非同步版本) --------
-async def get_all_symbols_async(session):
-    async with all_symbols_limiter: # 使用專屬的速率限制器
+async def get_promising_symbols_by_apy(session, top_percentile=0.5, max_symbols=1000):
+    """
+    基於APY排名篩選有希望的交易對（取前20%）
+    
+    Args:
+        session: aiohttp session
+        top_percentile: 取前百分比（預設0.2 = 前20%）
+        max_symbols: 最大返回數量
+        
+    Returns:
+        tuple: (symbols_list, apy_dict) - 交易對列表和APY字典
+    """
+    print("🔍 正在基於APY排名篩選有潛力的交易對（前20%）...")
+    
+    # 先獲取所有USDT交易對
+    async with all_symbols_limiter:
         url = "https://api.gateio.ws/api/v4/spot/currency_pairs"
         try:
             async with session.get(url) as r:
                 r.raise_for_status()
                 data = await r.json()
-                return [item['id'] for item in data]
+                all_symbols = [item['id'] for item in data if item['id'].endswith('_USDT')]
         except Exception as e:
             print(f"取得交易對失敗: {e}")
-            return []
+            return [], {}
+    
+    # 獲取所有幣種的APY
+    print(f"📊 檢查 {len(all_symbols)} 個USDT交易對的APY...")
+    promising_symbols = []
+    apy_data = []
+    all_apy_dict = {}  # 儲存所有APY數據
+    
+    # 批量獲取APY (每次處理50個以控制速度)
+    batch_size = 50
+    all_valid_apy_data = []  # 儲存所有有效的APY數據
+    for i in range(0, len(all_symbols), batch_size):
+        batch_symbols = all_symbols[i:i+batch_size]
+        batch_base_coins = [s.split('_')[0] for s in batch_symbols]
+        
+        # 並行獲取這批幣種的APY
+        apr_tasks = [get_token_rate_async(session, coin) for coin in batch_base_coins]
+        apr_results = await asyncio.gather(*apr_tasks, return_exceptions=True)
+        
+        for symbol, apr_result in zip(batch_symbols, apr_results):
+            if isinstance(apr_result, dict) and apr_result.get('compound_apr') is not None:
+                base_coin = symbol.split('_')[0]
+                apy = apr_result['compound_apr']
+                all_apy_dict[base_coin] = apy
+                
+                # 收集所有有效的APY數據（不再用固定門檻）
+                all_valid_apy_data.append({
+                    'symbol': symbol,
+                    'apy': apy
+                })
+        
+        print(f"   ✅ 已檢查 {min(i+batch_size, len(all_symbols))}/{len(all_symbols)} 個交易對")
+    
+    # 按APY排序
+    all_valid_apy_data.sort(key=lambda x: x['apy'], reverse=True)
+    
+    # 計算前20%的數量
+    total_valid_apys = len(all_valid_apy_data)
+    top_20_percent_count = int(total_valid_apys * top_percentile)  # 前20%
+    
+    if top_20_percent_count == 0 and total_valid_apys > 0:
+        top_20_percent_count = min(10, total_valid_apys)  # 至少取10個
+    
+    # 取前20%的高APY幣種
+    apy_data = all_valid_apy_data[:min(top_20_percent_count, max_symbols)]
+    promising_symbols = [item['symbol'] for item in apy_data]
+    
+    # 如果結果太少，補充一些主流幣種
+    if len(promising_symbols) < 20:
+        mainstream_symbols = []
+        mainstream_coins = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'SOL', 'DOT', 'MATIC', 'LINK', 'UNI']
+        for coin in mainstream_coins:
+            symbol = f"{coin}_USDT"
+            if symbol in all_symbols and symbol not in promising_symbols:
+                mainstream_symbols.append(symbol)
+        
+        # 補充主流幣種，但不超過max_symbols
+        supplement_count = min(len(mainstream_symbols), max_symbols - len(promising_symbols))
+        promising_symbols.extend(mainstream_symbols[:supplement_count])
+        print(f"💡 補充了 {supplement_count} 個主流幣種")
+    
+    print(f"🎯 APY排名篩選結果:")
+    print(f"   📊 有效APY數據: {total_valid_apys} 個")
+    print(f"   🏆 前20%數量: {top_20_percent_count} 個")
+    print(f"   ✅ 最終選定: {len(promising_symbols)} 個交易對")
+    
+    if apy_data:
+        print(f"   📈 最高APY: {apy_data[0]['apy']:.2%} ({apy_data[0]['symbol']})")
+        if len(apy_data) > 1:
+            print(f"   📊 前20%平均APY: {sum(item['apy'] for item in apy_data)/len(apy_data):.2%}")
+            print(f"   📉 前20%門檻APY: {apy_data[-1]['apy']:.2%}")
+    
+    return promising_symbols, all_apy_dict
+
+async def get_all_symbols_async(session, filter_promising=False):
+    """
+    獲取交易對列表
+    
+    Args:
+        session: aiohttp session
+        filter_promising: 是否篩選有希望的交易對
+        
+    Returns:
+        tuple: (symbols_list, apy_dict) - 交易對列表和APY字典（如果有的話）
+    """
+    if filter_promising:
+        # 使用基於APY的智能篩選
+        return await get_promising_symbols_by_apy(session)
+    else:
+        # 返回所有交易對
+        async with all_symbols_limiter:
+            url = "https://api.gateio.ws/api/v4/spot/currency_pairs"
+            try:
+                async with session.get(url) as r:
+                    r.raise_for_status()
+                    data = await r.json()
+                    all_symbols = [item['id'] for item in data]
+                    print(f"📊 獲取全部交易對: {len(all_symbols)} 個")
+                    return all_symbols, {}
+            except Exception as e:
+                print(f"取得交易對失敗: {e}")
+                return [], {}
 
 async def get_klines_async(session, symbol, interval='1h', limit=700, retries=3, backoff_factor=1.0):
     # Use semaphore to control concurrency
@@ -263,13 +378,20 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-async def collect_signals_async():
+async def collect_signals_async(filter_promising=True):
+    """
+    收集交易訊號
+    
+    Args:
+        filter_promising: 是否只分析有希望的交易對（預設True）
+    """
     async with aiohttp.ClientSession() as session:
-        symbols = await get_all_symbols_async(session)
+        symbols, apy_dict = await get_all_symbols_async(session, filter_promising)
         
         all_signals = []
         # Process symbols one by one to avoid high memory usage
-        for symbol in tqdm(symbols[:], desc="收集並處理 Vegas + SMC 訊號"):
+        desc = "分析高APY潛力幣種的技術訊號" if filter_promising else "收集並處理 Vegas + SMC 訊號"
+        for symbol in tqdm(symbols[:], desc=desc):
             try:
                 df = await get_klines_async(session, symbol)
                 if df is not None and len(df) >= 676:  # 確保有足夠的數據
@@ -288,11 +410,20 @@ async def collect_signals_async():
         
         final_df = pd.concat(all_signals, ignore_index=True)
         
-        apr_tasks = [get_token_rate_async(session, s.split('_')[0]) for s in final_df['symbol'].unique()]
-        apr_results = await asyncio.gather(*apr_tasks)
-        
-        apr_map = {res['symbol']: res['compound_apr'] for res in apr_results if res}
-        final_df['compound_apr'] = final_df['symbol'].apply(lambda x: apr_map.get(x.split('_')[0]))
+        # 使用已經獲取的APY數據，避免重複計算
+        if filter_promising and apy_dict:
+            print("💡 使用已計算的APY數據，避免重複API調用")
+            final_df['compound_apr'] = final_df['symbol'].apply(lambda x: apy_dict.get(x.split('_')[0]))
+        else:
+            # 獲取APY數據
+            unique_symbols = final_df['symbol'].unique()
+            unique_base_coins = [s.split('_')[0] for s in unique_symbols]
+            
+            apr_tasks = [get_token_rate_async(session, coin) for coin in unique_base_coins]
+            apr_results = await asyncio.gather(*apr_tasks)
+            
+            apr_map = {res['symbol']: res['compound_apr'] for res in apr_results if res}
+            final_df['compound_apr'] = final_df['symbol'].apply(lambda x: apr_map.get(x.split('_')[0]))
         
         # 計算綜合評分
         scores = []
@@ -314,22 +445,37 @@ async def collect_signals_async():
 
         return final_df
 
-async def send_enhanced_signals():
+async def send_enhanced_signals(filter_promising=True):
+    """
+    發送增強版訊號分析
+    
+    Args:
+        filter_promising: 是否只分析有希望的交易對（預設True）
+    """
     channel = bot.get_channel(CHANNEL_ID)
     if channel is None:
         print(f"無法找到頻道 ID: {CHANNEL_ID}")
         return
 
-    # 發送分析中的訊息
-    analyzing_embed = discord.Embed(
-        title="🔍 增強版技術分析中...",
-        description="正在掃描所有交易對並計算 Vegas 通道 + Smart Money Concepts 指標，請稍候...",
-        color=0xFFD700  # 金色
-    )
-    analyzing_embed.set_footer(text="預計需要 2-3 分鐘完成分析")
+    # 發送初始分析中的訊息
+    if filter_promising:
+        analyzing_embed = discord.Embed(
+            title="🔍 APY排名篩選分析中...",
+            description="正在篩選APY前20%的幣種，這些往往是價格低點的潛力標的...",
+            color=0xFFD700  # 金色
+        )
+        analyzing_embed.set_footer(text="正在進行APY排名篩選和技術分析，請稍候...")
+    else:
+        analyzing_embed = discord.Embed(
+            title="🔍 全面技術分析中...",
+            description="正在掃描所有交易對並計算 Vegas 通道 + Smart Money Concepts 指標，請稍候...",
+            color=0xFFD700  # 金色
+        )
+        analyzing_embed.set_footer(text="正在進行全市場掃描，請稍候...")
+    
     await channel.send(embed=analyzing_embed)
 
-    final_df = await collect_signals_async()
+    final_df = await collect_signals_async(filter_promising)
 
     if final_df is None or final_df.empty:
         no_signals_embed = discord.Embed(
@@ -341,17 +487,12 @@ async def send_enhanced_signals():
         await channel.send(embed=no_signals_embed)
         return
 
-    # 按評分分層處理訊號
-    final_df = final_df.sort_values(by='signal_score', ascending=False)
+    # 只篩選做多訊號
+    long_signals = ['LONG_BREAKOUT', 'LONG_BOUNCE', 'SMC_BULLISH']
+    final_df = final_df[final_df['vegas_signal'].isin(long_signals)]
     
-    # Tier 1: 高信心訊號 (評分 >= 70)
-    tier1_df = final_df[final_df['signal_score'] >= 70].head(3)
-    
-    # Tier 2: 中信心訊號 (評分 50-69)
-    tier2_df = final_df[(final_df['signal_score'] >= 50) & (final_df['signal_score'] < 70)].head(5)
-    
-    # Tier 3: 觀察訊號 (評分 30-49)
-    tier3_df = final_df[(final_df['signal_score'] >= 30) & (final_df['signal_score'] < 50)].head(5)
+    # 按評分排序，取TOP 10
+    final_df = final_df.sort_values(by='signal_score', ascending=False).head(10)
 
     # 統計數據
     total_signals = len(final_df)
@@ -361,22 +502,22 @@ async def send_enhanced_signals():
 
     # 創建主要結果 Embed
     main_embed = discord.Embed(
-        title="🎯 增強版技術分析報告",
-        description="結合 Vegas 通道 + Smart Money Concepts 的綜合分析",
+        title="🚀 TOP 10 做多訊號分析",
+        description="專注做多機會 - Vegas 通道 + Smart Money Concepts",
         color=0x00FF00  # 綠色
     )
     
     # 添加統計信息
     main_embed.add_field(
-        name="📊 分析統計",
-        value=f"```\n總訊號數: {total_signals}\nVegas+SMC: {vegas_signals}\n純SMC訊號: {smc_only_signals}\n平均評分: {avg_score:.1f}/100```",
+        name="📊 做多訊號統計",
+        value=f"```\n做多訊號數: {total_signals}\nVegas+SMC: {vegas_signals}\n純SMC訊號: {smc_only_signals}\n平均評分: {avg_score:.1f}/100```",
         inline=False
     )
 
-    # Tier 1: 高信心訊號
-    if not tier1_df.empty:
-        tier1_signals = []
-        for i, (_, row) in enumerate(tier1_df.iterrows(), 1):
+    # TOP 10 做多訊號
+    if not final_df.empty:
+        top_signals = []
+        for i, (_, row) in enumerate(final_df.iterrows(), 1):
             signal_type = row['vegas_signal']
             signal_emoji = get_signal_emoji(signal_type)
             signal_name = get_signal_name(signal_type)
@@ -389,75 +530,56 @@ async def send_enhanced_signals():
             # 獲取評分明細
             score_breakdown = format_score_breakdown(row.get('score_factors', {}))
             
-            tier1_signals.append(
-                f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
+            # 根據排名添加獎牌emoji
+            rank_emoji = ""
+            if i == 1:
+                rank_emoji = "🥇 "
+            elif i == 2:
+                rank_emoji = "🥈 "
+            elif i == 3:
+                rank_emoji = "🥉 "
+            
+            top_signals.append(
+                f"{rank_emoji}`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
                 f"     💰 `${row['close']:.6f}` | 📊 `{signal_name}` | 🏦 `{apr_str}`\n"
                 f"     🎯 {smc_highlights}\n"
                 f"     📊 **評分明細**: {score_breakdown}"
             )
         
-        tier1_text = "\n\n".join(tier1_signals)
-        main_embed.add_field(
-            name="🥇 Tier 1: 高信心訊號 (70-100分)",
-            value=tier1_text,
-            inline=False
-        )
-
-    # Tier 2: 中信心訊號
-    if not tier2_df.empty:
-        tier2_signals = []
-        for i, (_, row) in enumerate(tier2_df.iterrows(), 1):
-            signal_type = row['vegas_signal']
-            signal_emoji = get_signal_emoji(signal_type)
-            apr_str = f"{row['compound_apr']:.2%}" if pd.notna(row['compound_apr']) else "N/A"
-            score = row['signal_score']
-            
-            # 簡化的評分明細
-            score_breakdown = format_score_breakdown(row.get('score_factors', {}))
-            
-            tier2_signals.append(
-                f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分` | `{apr_str}`\n"
-                f"     📊 {score_breakdown}"
+        # 如果訊號太多，分成兩個field顯示
+        if len(top_signals) <= 5:
+            top_text = "\n\n".join(top_signals)
+            main_embed.add_field(
+                name="🏆 TOP 10 做多推薦",
+                value=top_text,
+                inline=False
             )
-        
-        tier2_text = "\n\n".join(tier2_signals)
-        main_embed.add_field(
-            name="🥈 Tier 2: 中信心訊號 (50-69分)",
-            value=tier2_text,
-            inline=True
-        )
-
-    # Tier 3: 觀察訊號
-    if not tier3_df.empty:
-        tier3_signals = []
-        for i, (_, row) in enumerate(tier3_df.iterrows(), 1):
-            signal_type = row['vegas_signal']
-            signal_emoji = get_signal_emoji(signal_type)
-            score = row['signal_score']
-            
-            # 簡化的評分明細
-            score_breakdown = format_score_breakdown(row.get('score_factors', {}))
-            
-            tier3_signals.append(
-                f"`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
-                f"     📊 {score_breakdown}"
+        else:
+            # 前5名
+            top5_text = "\n\n".join(top_signals[:5])
+            main_embed.add_field(
+                name="🏆 TOP 5 做多推薦",
+                value=top5_text,
+                inline=False
             )
-        
-        tier3_text = "\n\n".join(tier3_signals)
-        main_embed.add_field(
-            name="🥉 Tier 3: 觀察清單 (30-49分)",
-            value=tier3_text,
-            inline=True
-        )
+            
+            # 6-10名
+            if len(top_signals) > 5:
+                next5_text = "\n\n".join(top_signals[5:])
+                main_embed.add_field(
+                    name="📈 第6-10名 做多推薦",
+                    value=next5_text,
+                    inline=False
+                )
 
     # 添加說明
     main_embed.add_field(
-        name="ℹ️ 評分說明",
-        value="```\n📊 Vegas通道: 25分 (突破) / 15分 (反彈)\n🏗️ SMC結構: 15分 (BOS) / 20分 (CHoCH)\n📦 OrderBlock: 最高15分\n⚡ 流動性掃蕩: 最高10分\n💎 FairValueGap: 最高10分\n💰 高年利率: 最高10分```",
+        name="ℹ️ 做多訊號評分說明",
+        value="```\n🚀 技術突破: 25分 | ⬆️ 技術反彈: 15分\n🔥 機構看漲訊號: 依強度評分\n🏗️ 突破確認: 15分 | 趨勢轉變: 20分\n📦 機構大單區: 最高15分\n💎 價格缺口: 最高10分\n⚡ 大戶洗盤: 最高10分\n💰 借貸年利率: 最高10分```",
         inline=False
     )
     
-    main_embed.set_footer(text="⚠️ 僅供參考，請自行評估風險 | 結合多重技術指標分析")
+    main_embed.set_footer(text="⚠️ 僅供參考，請自行評估風險 | 專注做多機會分析")
     main_embed.timestamp = discord.utils.utcnow()
 
     await channel.send(embed=main_embed)
@@ -487,7 +609,7 @@ def get_signal_name(signal_type):
     return name_map.get(signal_type, '未知訊號')
 
 def get_smc_highlights(smc_data):
-    """獲取 SMC 分析亮點"""
+    """獲取 SMC 分析亮點（中文化）"""
     if not smc_data:
         return "基礎分析"
     
@@ -496,38 +618,44 @@ def get_smc_highlights(smc_data):
     # 檢查市場結構
     structure = smc_data.get('market_structure', {})
     if structure.get('bos_signals'):
-        highlights.append('BOS確認')
+        highlights.append('突破確認')
     if structure.get('choch_signals'):
-        highlights.append('CHoCH轉勢')
+        highlights.append('趨勢轉變')
     
-    # 檢查 Order Blocks
+    # 檢查 Order Blocks (機構大單區)
     order_blocks = smc_data.get('order_blocks', [])
     if order_blocks:
         active_obs = [ob for ob in order_blocks if ob.get('active', False)]
         if active_obs:
-            highlights.append(f'{len(active_obs)}個活躍OB')
+            highlights.append(f'{len(active_obs)}個大單區')
     
-    # 檢查 Fair Value Gaps
+    # 檢查 Fair Value Gaps (價格缺口)
     fvgs = smc_data.get('fair_value_gaps', [])
     if fvgs:
-        highlights.append(f'{len(fvgs)}個FVG')
+        highlights.append(f'{len(fvgs)}個價格缺口')
     
     # 檢查流動性掃蕩
     sweeps = smc_data.get('liquidity_sweeps', [])
     if sweeps:
-        highlights.append('流動性掃蕩')
+        highlights.append('大戶洗盤')
     
     # 檢查當前區域
     zones = smc_data.get('premium_discount', {})
     current_zone = zones.get('current_zone', '')
     if current_zone:
-        zone_emoji = {'PREMIUM': '🔴', 'DISCOUNT': '🟢', 'EQUILIBRIUM': '🟡'}.get(current_zone, '')
-        highlights.append(f'{zone_emoji}{current_zone.lower()}')
+        zone_map = {
+            'PREMIUM': '🔴高價區', 
+            'DISCOUNT': '🟢低價區', 
+            'EQUILIBRIUM': '🟡平衡區'
+        }
+        zone_name = zone_map.get(current_zone, '')
+        if zone_name:
+            highlights.append(zone_name)
     
     return ' | '.join(highlights) if highlights else '基礎分析'
 
 def format_score_breakdown(score_factors):
-    """格式化評分明細"""
+    """格式化評分明細（中文化）"""
     if not score_factors:
         return "無評分資料"
     
@@ -535,43 +663,43 @@ def format_score_breakdown(score_factors):
     
     # Vegas 通道評分
     if 'vegas_breakout' in score_factors:
-        breakdown_parts.append(f"Vegas突破: {score_factors['vegas_breakout']}分")
+        breakdown_parts.append(f"技術突破: {score_factors['vegas_breakout']}分")
     elif 'vegas_bounce' in score_factors:
-        breakdown_parts.append(f"Vegas反彈: {score_factors['vegas_bounce']}分")
+        breakdown_parts.append(f"技術反彈: {score_factors['vegas_bounce']}分")
     
     # SMC 結構評分
     if 'smc_bos' in score_factors:
-        breakdown_parts.append(f"BOS: {score_factors['smc_bos']}分")
+        breakdown_parts.append(f"突破確認: {score_factors['smc_bos']}分")
     if 'smc_choch' in score_factors:
-        breakdown_parts.append(f"CHoCH: {score_factors['smc_choch']}分")
+        breakdown_parts.append(f"趨勢轉變: {score_factors['smc_choch']}分")
     
     # Order Blocks 評分
     if 'order_blocks' in score_factors:
-        breakdown_parts.append(f"OB: {score_factors['order_blocks']}分")
+        breakdown_parts.append(f"大單區: {score_factors['order_blocks']}分")
     
     # Fair Value Gaps 評分
     if 'fair_value_gaps' in score_factors:
-        breakdown_parts.append(f"FVG: {score_factors['fair_value_gaps']}分")
+        breakdown_parts.append(f"價格缺口: {score_factors['fair_value_gaps']}分")
     
     # 流動性掃蕩評分
     if 'liquidity_sweeps' in score_factors:
-        breakdown_parts.append(f"流動性: {score_factors['liquidity_sweeps']}分")
+        breakdown_parts.append(f"大戶洗盤: {score_factors['liquidity_sweeps']}分")
     
     # APR 評分
     if 'high_apr' in score_factors:
-        breakdown_parts.append(f"高APR: {score_factors['high_apr']}分")
+        breakdown_parts.append(f"高年利率: {score_factors['high_apr']}分")
     elif 'medium_apr' in score_factors:
-        breakdown_parts.append(f"中APR: {score_factors['medium_apr']}分")
+        breakdown_parts.append(f"中年利率: {score_factors['medium_apr']}分")
     elif 'low_apr' in score_factors:
-        breakdown_parts.append(f"低APR: {score_factors['low_apr']}分")
+        breakdown_parts.append(f"低年利率: {score_factors['low_apr']}分")
     
     return " | ".join(breakdown_parts) if breakdown_parts else "基礎評分"
 
 @bot.event
 async def on_ready():
     print(f'已登入 Discord: {bot.user}')
-    # Run the signal collection task
-    await send_enhanced_signals()
+    # Run the signal collection task with promising filter enabled
+    await send_enhanced_signals(filter_promising=True)
     # Once the task is complete, close the bot gracefully
     await bot.close()
 
