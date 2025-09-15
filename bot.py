@@ -641,6 +641,8 @@ def get_smc_highlights(smc_data):
     fvgs = smc_data.get('fair_value_gaps', [])
     if fvgs:
         highlights.append(f'{len(fvgs)}個價格缺口')
+    else:
+        highlights.append('無價格缺口')
     
     # 檢查流動性掃蕩
     sweeps = smc_data.get('liquidity_sweeps', [])

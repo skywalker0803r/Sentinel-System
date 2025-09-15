@@ -172,9 +172,9 @@ class SmartMoneyConceptsAnalyzer:
                 gap_low = prev_candle['high']
                 gap_size = gap_high - gap_low
                 
-                # 檢查缺口是否顯著
+                # 檢查缺口是否顯著 (降低閾值以檢測更多有效缺口)
                 atr_value = df['atr'].iloc[i] if 'atr' in df.columns else gap_size * 2
-                if gap_size > atr_value * 0.3:
+                if gap_size > atr_value * 0.1:
                     fvg_list.append({
                         'type': 'BULLISH_FVG',
                         'high': gap_high,
@@ -194,7 +194,7 @@ class SmartMoneyConceptsAnalyzer:
                 gap_size = gap_high - gap_low
                 
                 atr_value = df['atr'].iloc[i] if 'atr' in df.columns else gap_size * 2
-                if gap_size > atr_value * 0.3:
+                if gap_size > atr_value * 0.1:
                     fvg_list.append({
                         'type': 'BEARISH_FVG',
                         'high': gap_high,
