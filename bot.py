@@ -253,9 +253,10 @@ def detect_vegas_turning_points(df):
     return df.tail(1)
 
 def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data):
-    """計算綜合訊號評分 (0-100)"""
+    """計算綜合訊號評分 (0-100) - 增強版包含爆發性模式檢測"""
     score = 0
     factors = {}
+    explosive_indicators = []  # 記錄爆發性指標
     
     # Vegas 通道基礎分數 (0-40分)
     if vegas_signal is not None:
@@ -272,6 +273,7 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data):
         if signal_type in ['LONG_BREAKOUT', 'SHORT_BREAKDOWN']:
             score += 25  # 突破訊號較強
             factors['vegas_breakout'] = 25
+            explosive_indicators.append('強勢突破')
         elif signal_type in ['LONG_BOUNCE', 'SHORT_FAILED_BOUNCE']:
             score += 15  # 反彈訊號較弱
             factors['vegas_bounce'] = 15
@@ -284,9 +286,11 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data):
         if structure['bos_signals']:
             score += 15
             factors['smc_bos'] = 15
+            explosive_indicators.append('結構突破')
         if structure['choch_signals']:
             score += 20  # 趨勢轉變更重要
             factors['smc_choch'] = 20
+            explosive_indicators.append('趨勢轉變')
     
     # Order Blocks 分數 (0-15分)
     if smc_analysis and 'order_blocks' in smc_analysis:
@@ -317,14 +321,65 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data):
         if apr_data > 1.0:  # 100%+
             score += 10
             factors['high_apr'] = 10
+            explosive_indicators.append('超高APY')
         elif apr_data > 0.5:  # 50%+
             score += 6
             factors['medium_apr'] = 6
+            explosive_indicators.append('高APY')
         elif apr_data > 0.2:  # 20%+
             score += 3
             factors['low_apr'] = 3
     
+    # 🚀 爆發性模式檢測和加成
+    is_explosive = detect_explosive_pattern(explosive_indicators, smc_analysis, score)
+    if is_explosive:
+        score += 20  # 爆發性模式額外加分
+        factors['explosive_bonus'] = 20
+        factors['explosive_indicators'] = explosive_indicators
+        factors['is_explosive'] = True
+    else:
+        factors['is_explosive'] = False
+    
     return min(100, score), factors
+
+def detect_explosive_pattern(indicators, smc_analysis, base_score):
+    """檢測是否為爆發性模式"""
+    explosive_score = 0
+    
+    # 1. 強勢技術指標 (40分)
+    if '強勢突破' in indicators:
+        explosive_score += 15
+    if '結構突破' in indicators:
+        explosive_score += 10
+    if '趨勢轉變' in indicators:
+        explosive_score += 15
+    
+    # 2. 高APY指標 (20分)
+    if '超高APY' in indicators:
+        explosive_score += 20
+    elif '高APY' in indicators:
+        explosive_score += 10
+    
+    # 3. SMC多重確認 (20分)
+    if smc_analysis:
+        confirmation_count = 0
+        if smc_analysis.get('order_blocks'):
+            confirmation_count += 1
+        if smc_analysis.get('fair_value_gaps'):
+            confirmation_count += 1
+        if smc_analysis.get('liquidity_sweeps'):
+            confirmation_count += 1
+        
+        explosive_score += confirmation_count * 7  # 每個確認7分
+    
+    # 4. 基礎評分門檻 (20分)
+    if base_score >= 70:
+        explosive_score += 20
+    elif base_score >= 60:
+        explosive_score += 10
+    
+    # 爆發性模式判定：需要達到60分以上
+    return explosive_score >= 60
 
 def enhance_vegas_with_smc(df, symbol):
     """使用 SMC 增強 Vegas 通道分析"""
@@ -519,7 +574,10 @@ async def send_enhanced_signals(filter_promising=True):
         top_signals = []
         for i, (_, row) in enumerate(final_df.iterrows(), 1):
             signal_type = row['vegas_signal']
-            signal_emoji = get_signal_emoji(signal_type)
+            score_factors = row.get('score_factors', {})
+            is_explosive = score_factors.get('is_explosive', False)
+            
+            signal_emoji = get_signal_emoji(signal_type, is_explosive)
             signal_name = get_signal_name(signal_type)
             apr_str = f"{row['compound_apr']:.2%}" if pd.notna(row['compound_apr']) else "N/A"
             score = row['signal_score']
@@ -528,7 +586,7 @@ async def send_enhanced_signals(filter_promising=True):
             smc_highlights, zone_info = get_smc_highlights(row.get('smc_data', {}))
             
             # 獲取評分明細
-            score_breakdown = format_score_breakdown(row.get('score_factors', {}))
+            score_breakdown = format_score_breakdown(score_factors)
             
             # 根據排名添加獎牌emoji
             rank_emoji = ""
@@ -539,6 +597,12 @@ async def send_enhanced_signals(filter_promising=True):
             elif i == 3:
                 rank_emoji = "🥉 "
             
+            # 爆發性模式特殊標註
+            explosive_tag = ""
+            if is_explosive:
+                explosive_indicators = score_factors.get('explosive_indicators', [])
+                explosive_tag = f"\n     🚨 **爆發性模式**: {' | '.join(explosive_indicators)} 🚨"
+            
             # 格式化價格區間信息（簡化格式以節省字符）
             zone_display = ""
             if zone_info:
@@ -547,7 +611,7 @@ async def send_enhanced_signals(filter_promising=True):
             top_signals.append(
                 f"{rank_emoji}`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
                 f"     💰 `${row['close']:.6f}` | 📊 `{signal_name}` | 🏦 `{apr_str}`\n"
-                f"     🎯 {smc_highlights}{zone_display}\n"
+                f"     🎯 {smc_highlights}{zone_display}{explosive_tag}\n"
                 f"     📊 **評分明細**: {score_breakdown}"
             )
         
@@ -575,7 +639,14 @@ async def send_enhanced_signals(filter_promising=True):
     # 添加說明
     main_embed.add_field(
         name="ℹ️ 做多訊號評分說明",
-        value="```\n🚀 技術突破: 25分 | ⬆️ 技術反彈: 15分\n🔥 機構看漲訊號: 依強度評分\n🏗️ 突破確認: 15分 | 趨勢轉變: 20分\n📦 機構大單區: 最高15分\n💎 價格缺口: 最高10分\n⚡ 大戶洗盤: 最高10分\n💰 借貸年利率: 最高10分```",
+        value="```\n🚀 技術突破: 25分 | ⬆️ 技術反彈: 15分\n🔥 機構看漲訊號: 依強度評分\n🏗️ 突破確認: 15分 | 趨勢轉變: 20分\n📦 機構大單區: 最高15分\n💎 價格缺口: 最高10分\n⚡ 大戶洗盤: 最高10分\n💰 借貸年利率: 最高10分\n💥 爆發性模式: 額外20分```",
+        inline=False
+    )
+    
+    # 爆發性模式特別說明
+    main_embed.add_field(
+        name="💥 爆發性模式說明 (重點關注!)",
+        value="```\n🚨 識別標準:\n• 強勢技術突破 + SMC多重確認\n• 高APY + 結構轉變信號\n• 基礎評分70分以上\n\n💎 特徵:\n• 短期內可能暴漲50%-300%\n• 快進快出，建議1-2週內止盈\n• 小幣爆發的核心機會\n\n⚠️ 風險:\n• 波動性極大，需嚴格風控\n• 時機重要，錯過就是普通信號```",
         inline=False
     )
     
@@ -591,17 +662,30 @@ async def send_enhanced_signals(filter_promising=True):
 
     await channel.send(embed=main_embed)
 
-def get_signal_emoji(signal_type):
-    """獲取訊號對應的 emoji"""
-    emoji_map = {
-        'LONG_BREAKOUT': '🚀',
-        'LONG_BOUNCE': '⬆️',
-        'SHORT_BREAKDOWN': '📉',
-        'SHORT_FAILED_BOUNCE': '⬇️',
-        'SMC_BULLISH': '🔥',
-        'SMC_BEARISH': '❄️'
-    }
-    return emoji_map.get(signal_type, '❓')
+def get_signal_emoji(signal_type, is_explosive=False):
+    """獲取訊號對應的 emoji - 爆發性模式特殊標註"""
+    if is_explosive:
+        # 爆發性模式專用emoji
+        explosive_emoji_map = {
+            'LONG_BREAKOUT': '💥🚀',
+            'LONG_BOUNCE': '💥⬆️', 
+            'SMC_BULLISH': '💥🔥',
+            'SHORT_BREAKDOWN': '💥📉',
+            'SHORT_FAILED_BOUNCE': '💥⬇️',
+            'SMC_BEARISH': '💥❄️'
+        }
+        return explosive_emoji_map.get(signal_type, '💥❓')
+    else:
+        # 一般訊號emoji
+        emoji_map = {
+            'LONG_BREAKOUT': '🚀',
+            'LONG_BOUNCE': '⬆️',
+            'SHORT_BREAKDOWN': '📉',
+            'SHORT_FAILED_BOUNCE': '⬇️',
+            'SMC_BULLISH': '🔥',
+            'SMC_BEARISH': '❄️'
+        }
+        return emoji_map.get(signal_type, '❓')
 
 def get_signal_name(signal_type):
     """獲取訊號名稱"""
@@ -675,11 +759,15 @@ def get_smc_highlights(smc_data):
     return ' | '.join(highlights) if highlights else '基礎分析', zone_info
 
 def format_score_breakdown(score_factors):
-    """格式化評分明細（中文化）"""
+    """格式化評分明細（中文化）- 包含爆發性模式"""
     if not score_factors:
         return "無評分資料"
     
     breakdown_parts = []
+    
+    # 爆發性模式優先顯示
+    if score_factors.get('is_explosive', False):
+        breakdown_parts.append(f"💥爆發性: {score_factors.get('explosive_bonus', 20)}分")
     
     # Vegas 通道評分
     if 'vegas_breakout' in score_factors:
