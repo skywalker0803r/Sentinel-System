@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 from aiolimiter import AsyncLimiter
-from smc_indicators import SmartMoneyConceptsAnalyzer
+from smc_indicators_optimized import OptimizedSmartMoneyConceptsAnalyzer as SmartMoneyConceptsAnalyzer
 
 load_dotenv()
 
