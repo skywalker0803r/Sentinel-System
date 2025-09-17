@@ -252,8 +252,106 @@ def detect_vegas_turning_points(df):
 
     return df.tail(1)
 
-def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data):
-    """計算綜合訊號評分 (0-100) - 增強版包含爆發性模式檢測"""
+def calculate_price_skew_indicator(df, lookback_period=100):
+    """
+    計算價格偏斜指標 - 識別偶爾出現超長上影線的幣種
+    
+    Args:
+        df: K線數據 DataFrame (需包含 high, low, close 欄位)
+        lookback_period: 回溯期間 (預設100根K線)
+    
+    Returns:
+        dict: 包含各種偏斜指標的字典
+    """
+    if len(df) < lookback_period:
+        return None
+    
+    # 取最近的數據
+    recent_df = df.tail(lookback_period).copy()
+    
+    # 1. 基本統計指標
+    high_prices = recent_df['high']
+    close_prices = recent_df['close']
+    
+    # 計算平均值和中位數
+    high_mean = high_prices.mean()
+    high_median = high_prices.median()
+    close_mean = close_prices.mean()
+    close_median = close_prices.median()
+    
+    # 2. 核心偏斜指標
+    # High價格的平均值/中位數比率 (核心概念)
+    high_skew_ratio = high_mean / high_median if high_median > 0 else 1.0
+    close_skew_ratio = close_mean / close_median if close_median > 0 else 1.0
+    
+    # 3. 上影線分析
+    recent_df['upper_shadow'] = recent_df['high'] - recent_df[['open', 'close']].max(axis=1)
+    recent_df['body_size'] = abs(recent_df['close'] - recent_df['open'])
+    recent_df['total_range'] = recent_df['high'] - recent_df['low']
+    
+    # 上影線比例 (上影線/總範圍)
+    recent_df['upper_shadow_ratio'] = recent_df['upper_shadow'] / recent_df['total_range']
+    recent_df['upper_shadow_ratio'] = recent_df['upper_shadow_ratio'].fillna(0)
+    
+    # 4. 識別極端上影線
+    # 上影線長度超過K線總高度50%的情況
+    extreme_upper_shadows = recent_df[recent_df['upper_shadow_ratio'] > 0.5]
+    extreme_shadow_count = len(extreme_upper_shadows)
+    extreme_shadow_frequency = extreme_shadow_count / lookback_period
+    
+    # 5. 計算上影線的統計特徵
+    upper_shadow_mean = recent_df['upper_shadow_ratio'].mean()
+    upper_shadow_median = recent_df['upper_shadow_ratio'].median()
+    upper_shadow_std = recent_df['upper_shadow_ratio'].std()
+    
+    # 6. 價格跳躍檢測
+    recent_df['price_change'] = recent_df['high'].pct_change()
+    extreme_jumps = recent_df[recent_df['price_change'] > 0.1]  # 10%以上的跳躍
+    jump_frequency = len(extreme_jumps) / lookback_period
+    
+    # 7. 整體偏斜評分 (0-100)
+    skew_score = 0
+    
+    # High價格偏斜評分 (最高40分)
+    if high_skew_ratio > 1.2:  # 平均值比中位數高20%以上
+        skew_score += min(40, (high_skew_ratio - 1) * 100)
+    
+    # 極端上影線頻率評分 (最高30分)
+    if extreme_shadow_frequency > 0.05:  # 超過5%的K線有極端上影線
+        skew_score += min(30, extreme_shadow_frequency * 600)
+    
+    # 價格跳躍頻率評分 (最高20分)
+    if jump_frequency > 0.02:  # 超過2%的K線有大幅跳躍
+        skew_score += min(20, jump_frequency * 1000)
+    
+    return {
+        'high_skew_ratio': high_skew_ratio,
+        'close_skew_ratio': close_skew_ratio,
+        'high_mean': high_mean,
+        'high_median': high_median,
+        'extreme_shadow_count': extreme_shadow_count,
+        'extreme_shadow_frequency': extreme_shadow_frequency,
+        'upper_shadow_mean': upper_shadow_mean,
+        'upper_shadow_median': upper_shadow_median,
+        'jump_frequency': jump_frequency,
+        'skew_score': min(100, skew_score),
+        'is_skew_candidate': skew_score >= 30,  # 30分以上認為是偏斜候選
+        'skew_level': get_skew_level(skew_score)
+    }
+
+def get_skew_level(score):
+    """根據評分判定偏斜等級"""
+    if score >= 60:
+        return "極度偏斜"
+    elif score >= 40:
+        return "高度偏斜"
+    elif score >= 20:
+        return "中度偏斜"
+    else:
+        return "正常分佈"
+
+def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_skew_data=None):
+    """計算綜合訊號評分 (0-100) - 增強版包含爆發性模式檢測和價格偏斜分析"""
     score = 0
     factors = {}
     explosive_indicators = []  # 記錄爆發性指標
@@ -330,6 +428,25 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data):
             score += 3
             factors['low_apr'] = 3
     
+    # 💡 價格偏斜指標加成 (0-15分) - 新增功能
+    if price_skew_data:
+        skew_score = price_skew_data.get('skew_score', 0)
+        if skew_score >= 60:  # 極度偏斜
+            score += 15
+            factors['extreme_skew'] = 15
+            explosive_indicators.append('極端偏斜')
+        elif skew_score >= 40:  # 高度偏斜
+            score += 10
+            factors['high_skew'] = 10
+            explosive_indicators.append('高度偏斜')
+        elif skew_score >= 20:  # 中度偏斜
+            score += 5
+            factors['medium_skew'] = 5
+            explosive_indicators.append('中度偏斜')
+        
+        # 記錄偏斜數據供顯示用
+        factors['skew_data'] = price_skew_data
+    
     # 🚀 爆發性模式檢測和加成
     is_explosive = detect_explosive_pattern(explosive_indicators, smc_analysis, score)
     if is_explosive:
@@ -382,9 +499,12 @@ def detect_explosive_pattern(indicators, smc_analysis, base_score):
     return explosive_score >= 60
 
 def enhance_vegas_with_smc(df, symbol):
-    """使用 SMC 增強 Vegas 通道分析"""
+    """使用 SMC 增強 Vegas 通道分析 - 加入價格偏斜分析"""
     if df is None or len(df) < 676:
         return None
+    
+    # 🔍 計算價格偏斜指標
+    price_skew_data = calculate_price_skew_indicator(df)
     
     # 獲取 Vegas 訊號
     vegas_df = detect_vegas_turning_points(df)
@@ -397,31 +517,45 @@ def enhance_vegas_with_smc(df, symbol):
         smc_analysis = {}
     
     if vegas_df is None or vegas_df.empty:
-        # 即使沒有 Vegas 訊號，也檢查是否有強 SMC 訊號
+        # 即使沒有 Vegas 訊號，也檢查是否有強 SMC 訊號或偏斜特徵
+        has_strong_smc = False
+        has_strong_skew = False
+        
         if smc_analysis:
             structure = smc_analysis.get('market_structure', {})
             if (structure.get('bos_signals') or structure.get('choch_signals') or
                 smc_analysis.get('order_blocks') or smc_analysis.get('liquidity_sweeps')):
-                
-                # 創建純 SMC 訊號
-                current_price = df['close'].iloc[-1]
-                smc_signal_type = 'SMC_BULLISH' if smc_analysis.get('overall_bias') == 'BULLISH' else 'SMC_BEARISH'
-                
-                result_df = pd.DataFrame({
-                    'close': [current_price],
-                    'vegas_signal': [smc_signal_type],
-                    'ema12': [df['close'].ewm(span=12).mean().iloc[-1]],
-                    'vegas_high': [0],
-                    'vegas_low': [0]
-                })
-                result_df['smc_analysis'] = [smc_analysis]
-                result_df['signal_source'] = ['SMC_ONLY']
-                return result_df
+                has_strong_smc = True
+        
+        if price_skew_data and price_skew_data.get('is_skew_candidate', False):
+            has_strong_skew = True
+        
+        if has_strong_smc or has_strong_skew:
+            # 創建純 SMC/偏斜 訊號
+            current_price = df['close'].iloc[-1]
+            signal_type = 'SMC_BULLISH' if smc_analysis.get('overall_bias') == 'BULLISH' else 'SMC_BEARISH'
+            
+            # 如果有強偏斜特徵，優先顯示偏斜信號
+            if has_strong_skew:
+                signal_type = f"SKEW_{signal_type}"
+            
+            result_df = pd.DataFrame({
+                'close': [current_price],
+                'vegas_signal': [signal_type],
+                'ema12': [df['close'].ewm(span=12).mean().iloc[-1]],
+                'vegas_high': [0],
+                'vegas_low': [0]
+            })
+            result_df['smc_analysis'] = [smc_analysis]
+            result_df['price_skew_data'] = [price_skew_data]
+            result_df['signal_source'] = ['SMC_SKEW'] if has_strong_skew else ['SMC_ONLY']
+            return result_df
         return None
     
-    # 如果有 Vegas 訊號，加入 SMC 分析
+    # 如果有 Vegas 訊號，加入 SMC 分析和偏斜數據
     vegas_df = vegas_df.copy()
     vegas_df['smc_analysis'] = [smc_analysis]
+    vegas_df['price_skew_data'] = [price_skew_data]
     vegas_df['signal_source'] = ['VEGAS_SMC']
     
     return vegas_df
@@ -484,15 +618,18 @@ async def collect_signals_async(filter_promising=True):
         scores = []
         score_factors = []
         smc_data = []
+        skew_data = []
         
         for idx, row in final_df.iterrows():
             smc_analysis = row.get('smc_analysis', {})
             apr_data = row.get('compound_apr', 0)
+            price_skew_data = row.get('price_skew_data', {})
             
-            score, factors = calculate_signal_score(row, smc_analysis, row['symbol'], apr_data)
+            score, factors = calculate_signal_score(row, smc_analysis, row['symbol'], apr_data, price_skew_data)
             scores.append(score)
             score_factors.append(factors)
             smc_data.append(smc_analysis)
+            skew_data.append(price_skew_data)
         
         final_df['signal_score'] = scores
         final_df['score_factors'] = score_factors
@@ -542,8 +679,8 @@ async def send_enhanced_signals(filter_promising=True):
         await channel.send(embed=no_signals_embed)
         return
 
-    # 只篩選做多訊號
-    long_signals = ['LONG_BREAKOUT', 'LONG_BOUNCE', 'SMC_BULLISH']
+    # 只篩選做多訊號 (包含新的偏斜信號)
+    long_signals = ['LONG_BREAKOUT', 'LONG_BOUNCE', 'SMC_BULLISH', 'SKEW_SMC_BULLISH']
     final_df = final_df[final_df['vegas_signal'].isin(long_signals)]
     
     # 按評分排序，取TOP 10
@@ -639,7 +776,7 @@ async def send_enhanced_signals(filter_promising=True):
     # 添加說明
     main_embed.add_field(
         name="ℹ️ 做多訊號評分說明",
-        value="```\n🚀 技術突破: 25分 | ⬆️ 技術反彈: 15分\n🔥 機構看漲訊號: 依強度評分\n🏗️ 突破確認: 15分 | 趨勢轉變: 20分\n📦 機構大單區: 最高15分\n💎 價格缺口: 最高10分\n⚡ 大戶洗盤: 最高10分\n💰 借貸年利率: 最高10分\n💥 爆發性模式: 額外20分```",
+        value="```\n🚀 技術突破: 25分 | ⬆️ 技術反彈: 15分\n🔥 機構看漲訊號: 依強度評分\n🏗️ 突破確認: 15分 | 趨勢轉變: 20分\n📦 機構大單區: 最高15分\n💎 價格缺口: 最高10分\n⚡ 大戶洗盤: 最高10分\n💰 借貸年利率: 最高10分\n📊 價格偏斜指標: 最高15分 (NEW!)\n💥 爆發性模式: 額外20分```",
         inline=False
     )
     
@@ -647,6 +784,13 @@ async def send_enhanced_signals(filter_promising=True):
     main_embed.add_field(
         name="💥 爆發性模式說明 (重點關注!)",
         value="```\n🚨 識別標準:\n• 強勢技術突破 + SMC多重確認\n• 高APY + 結構轉變信號\n• 基礎評分70分以上\n\n💎 特徵:\n• 短期內可能暴漲50%-300%\n• 快進快出，建議1-2週內止盈\n• 小幣爆發的核心機會\n\n⚠️ 風險:\n• 波動性極大，需嚴格風控\n• 時機重要，錯過就是普通信號```",
+        inline=False
+    )
+    
+    # 新增價格偏斜指標說明
+    main_embed.add_field(
+        name="📊 價格偏斜指標說明 (NEW!)",
+        value="```\n🎯 核心概念:\n• 識別平時穩定但偶爾出現超長上影線的幣種\n• 平均值/中位數比值 > 1.2 = 有偏斜特徵\n• 極端上影線頻率 > 5% = 高偏斜\n\n💡 交易意義:\n• 這類幣種往往在機構試探後大漲\n• 適合潛伏等待突破性機會\n• 風險相對較低但爆發力強\n\n📈 評分標準:\n• 極度偏斜(60+分): 15分 | 高度偏斜(40+分): 10分\n• 中度偏斜(20+分): 5分```",
         inline=False
     )
     
@@ -670,6 +814,7 @@ def get_signal_emoji(signal_type, is_explosive=False):
             'LONG_BREAKOUT': '💥🚀',
             'LONG_BOUNCE': '💥⬆️', 
             'SMC_BULLISH': '💥🔥',
+            'SKEW_SMC_BULLISH': '💥📊🔥',  # 新增偏斜信號
             'SHORT_BREAKDOWN': '💥📉',
             'SHORT_FAILED_BOUNCE': '💥⬇️',
             'SMC_BEARISH': '💥❄️'
@@ -683,6 +828,7 @@ def get_signal_emoji(signal_type, is_explosive=False):
             'SHORT_BREAKDOWN': '📉',
             'SHORT_FAILED_BOUNCE': '⬇️',
             'SMC_BULLISH': '🔥',
+            'SKEW_SMC_BULLISH': '📊🔥',  # 新增偏斜信號
             'SMC_BEARISH': '❄️'
         }
         return emoji_map.get(signal_type, '❓')
@@ -695,6 +841,7 @@ def get_signal_name(signal_type):
         'SHORT_BREAKDOWN': '向下跌破',
         'SHORT_FAILED_BOUNCE': '失敗反彈',
         'SMC_BULLISH': 'SMC看漲',
+        'SKEW_SMC_BULLISH': '偏斜看漲',  # 新增偏斜信號
         'SMC_BEARISH': 'SMC看跌'
     }
     return name_map.get(signal_type, '未知訊號')
@@ -759,7 +906,7 @@ def get_smc_highlights(smc_data):
     return ' | '.join(highlights) if highlights else '基礎分析', zone_info
 
 def format_score_breakdown(score_factors):
-    """格式化評分明細（中文化）- 包含爆發性模式"""
+    """格式化評分明細（中文化）- 包含爆發性模式和價格偏斜指標"""
     if not score_factors:
         return "無評分資料"
     
@@ -768,6 +915,14 @@ def format_score_breakdown(score_factors):
     # 爆發性模式優先顯示
     if score_factors.get('is_explosive', False):
         breakdown_parts.append(f"💥爆發性: {score_factors.get('explosive_bonus', 20)}分")
+    
+    # 價格偏斜指標 (新增功能，優先顯示)
+    if 'extreme_skew' in score_factors:
+        breakdown_parts.append(f"📊極端偏斜: {score_factors['extreme_skew']}分")
+    elif 'high_skew' in score_factors:
+        breakdown_parts.append(f"📊高度偏斜: {score_factors['high_skew']}分")
+    elif 'medium_skew' in score_factors:
+        breakdown_parts.append(f"📊中度偏斜: {score_factors['medium_skew']}分")
     
     # Vegas 通道評分
     if 'vegas_breakout' in score_factors:
