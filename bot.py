@@ -518,24 +518,32 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_s
     return min(100, score), factors
 
 def detect_explosive_pattern(indicators, smc_analysis, base_score):
-    """檢測是否為爆發性模式"""
+    """檢測是否為爆發性模式 - 優化版：重視APY和價格偏斜，降低Vegas依賴"""
     explosive_score = 0
     
-    # 1. 強勢技術指標 (40分)
+    # 1. 技術指標 (降低權重：40分 → 20分)
     if '強勢突破' in indicators:
-        explosive_score += 15
+        explosive_score += 5  # 從15分降到5分
     if '結構突破' in indicators:
-        explosive_score += 10
+        explosive_score += 5  # 從10分降到5分
     if '趨勢轉變' in indicators:
-        explosive_score += 15
+        explosive_score += 10  # 從15分降到10分
     
-    # 2. 高APY指標 (20分)
+    # 2. APY指標 (提高權重：20分 → 25分，重視常見的高APY)
     if '超高APY' in indicators:
-        explosive_score += 20
+        explosive_score += 25  # 從20分提高到25分
     elif '高APY' in indicators:
-        explosive_score += 10
+        explosive_score += 20  # 從10分提高到20分 (重點提升)
     
-    # 3. SMC多重確認 (20分)
+    # 3. 價格偏斜指標 (新增，重視常見的高度偏斜)
+    if '極端偏斜' in indicators:
+        explosive_score += 25  # 很少見但很重要
+    elif '高度偏斜' in indicators:
+        explosive_score += 20  # 從10分提高到20分 (重點提升)
+    elif '中度偏斜' in indicators:
+        explosive_score += 10  # 從5分提高到10分
+    
+    # 4. SMC多重確認 (保持20分)
     if smc_analysis:
         confirmation_count = 0
         if smc_analysis.get('order_blocks'):
@@ -547,11 +555,17 @@ def detect_explosive_pattern(indicators, smc_analysis, base_score):
         
         explosive_score += confirmation_count * 7  # 每個確認7分
     
-    # 4. 基礎評分門檻 (20分)
+    # 5. 基礎評分門檻 (保持20分)
     if base_score >= 70:
         explosive_score += 20
     elif base_score >= 60:
         explosive_score += 10
+    
+    # 6. 複合指標加成 (新增：APY + 偏斜組合)
+    has_good_apy = '超高APY' in indicators or '高APY' in indicators
+    has_good_skew = '極端偏斜' in indicators or '高度偏斜' in indicators
+    if has_good_apy and has_good_skew:
+        explosive_score += 15  # APY + 偏斜複合加分
     
     # 爆發性模式判定：需要達到60分以上
     return explosive_score >= 60
