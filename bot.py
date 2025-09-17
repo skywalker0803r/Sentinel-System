@@ -408,7 +408,7 @@ def get_skew_level(score):
     else:
         return "正常分佈"
 
-def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_skew_data=None):
+def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_skew_data=None, funding_rate=None, oi_data=None):
     """計算綜合訊號評分 (0-100) - 增強版包含爆發性模式檢測和價格偏斜分析"""
     score = 0
     factors = {}
@@ -506,7 +506,7 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_s
         factors['skew_data'] = price_skew_data
     
     # 🚀 爆發性模式檢測和加成
-    is_explosive = detect_explosive_pattern(explosive_indicators, smc_analysis, score)
+    is_explosive = detect_explosive_pattern(explosive_indicators, smc_analysis, score, funding_rate, oi_data)
     if is_explosive:
         score += 20  # 爆發性模式額外加分
         factors['explosive_bonus'] = 20
@@ -517,33 +517,76 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_s
     
     return min(100, score), factors
 
-def detect_explosive_pattern(indicators, smc_analysis, base_score):
-    """檢測是否為爆發性模式 - 優化版：重視APY和價格偏斜，降低Vegas依賴"""
+def detect_explosive_pattern(indicators, smc_analysis, base_score, funding_rate=None, oi_data=None):
+    """檢測是否為爆發性模式 - 優化版：重視資金費率、OI增長、價格偏斜、APY以及低價區"""
     explosive_score = 0
     
-    # 1. 技術指標 (降低權重：40分 → 20分)
-    if '強勢突破' in indicators:
-        explosive_score += 5  # 從15分降到5分
-    if '結構突破' in indicators:
-        explosive_score += 5  # 從10分降到5分
-    if '趨勢轉變' in indicators:
-        explosive_score += 10  # 從15分降到10分
+    # 1. 資金費率指標 (新增重點: 30分)
+    if funding_rate is not None:
+        if funding_rate > 0.01:  # >1% 極高資金費率 - 強烈多頭情緒
+            explosive_score += 30
+            indicators.append('極高資金費率')
+        elif funding_rate > 0.005:  # >0.5% 高資金費率
+            explosive_score += 20  
+            indicators.append('高資金費率')
+        elif funding_rate > 0.002:  # >0.2% 中等資金費率
+            explosive_score += 10
+            indicators.append('中等資金費率')
+        elif funding_rate < -0.005:  # <-0.5% 極低資金費率 - 可能逆轉機會
+            explosive_score += 15
+            indicators.append('極低資金費率')
     
-    # 2. APY指標 (提高權重：20分 → 25分，重視常見的高APY)
+    # 2. OI增長率指標 (新增重點: 25分)
+    if oi_data and isinstance(oi_data, dict):
+        growth_rate = oi_data.get('growth_rate', 0)
+        if growth_rate > 20:  # >20% 極高OI增長
+            explosive_score += 25
+            indicators.append('極高OI增長')
+        elif growth_rate > 10:  # >10% 高OI增長
+            explosive_score += 20
+            indicators.append('高OI增長')
+        elif growth_rate > 5:  # >5% 中等OI增長
+            explosive_score += 15
+            indicators.append('中等OI增長')
+        elif growth_rate > 1:  # >1% 輕微OI增長
+            explosive_score += 10
+            indicators.append('輕微OI增長')
+    
+    # 3. 低價區判斷 (新增重點: 25分)
+    if smc_analysis:
+        zones = smc_analysis.get('premium_discount', {})
+        current_zone = zones.get('current_zone', '')
+        if current_zone == 'DISCOUNT':  # 在低價區 - 更容易爆發
+            explosive_score += 25
+            indicators.append('低價區位置')
+        elif current_zone == 'EQUILIBRIUM':  # 在平衡區
+            explosive_score += 10
+            indicators.append('平衡區位置')
+        # 高價區不加分，反而是風險信號
+    
+    # 4. APY指標 (保持重要: 25分)
     if '超高APY' in indicators:
-        explosive_score += 25  # 從20分提高到25分
+        explosive_score += 25
     elif '高APY' in indicators:
-        explosive_score += 20  # 從10分提高到20分 (重點提升)
+        explosive_score += 20
     
-    # 3. 價格偏斜指標 (新增，重視常見的高度偏斜)
+    # 5. 價格偏斜指標 (保持重要: 25分)
     if '極端偏斜' in indicators:
-        explosive_score += 25  # 很少見但很重要
+        explosive_score += 25
     elif '高度偏斜' in indicators:
-        explosive_score += 20  # 從10分提高到20分 (重點提升)
+        explosive_score += 20
     elif '中度偏斜' in indicators:
-        explosive_score += 10  # 從5分提高到10分
+        explosive_score += 10
     
-    # 4. SMC多重確認 (保持20分)
+    # 6. 技術指標 (降低權重: 15分)
+    if '強勢突破' in indicators:
+        explosive_score += 5
+    if '結構突破' in indicators:
+        explosive_score += 5
+    if '趨勢轉變' in indicators:
+        explosive_score += 5
+    
+    # 7. SMC多重確認 (保持: 15分)
     if smc_analysis:
         confirmation_count = 0
         if smc_analysis.get('order_blocks'):
@@ -553,19 +596,23 @@ def detect_explosive_pattern(indicators, smc_analysis, base_score):
         if smc_analysis.get('liquidity_sweeps'):
             confirmation_count += 1
         
-        explosive_score += confirmation_count * 7  # 每個確認7分
+        explosive_score += confirmation_count * 5  # 每個確認5分
     
-    # 5. 基礎評分門檻 (保持20分)
-    if base_score >= 70:
-        explosive_score += 20
-    elif base_score >= 60:
-        explosive_score += 10
+    # 8. 複合指標加成 (新增)
+    # 資金費率 + OI增長 組合 (最強信號)
+    has_high_funding = any(x in indicators for x in ['極高資金費率', '高資金費率'])
+    has_oi_growth = any(x in indicators for x in ['極高OI增長', '高OI增長'])
+    has_low_zone = '低價區位置' in indicators
+    has_good_apy = any(x in indicators for x in ['超高APY', '高APY'])
+    has_good_skew = any(x in indicators for x in ['極端偏斜', '高度偏斜'])
     
-    # 6. 複合指標加成 (新增：APY + 偏斜組合)
-    has_good_apy = '超高APY' in indicators or '高APY' in indicators
-    has_good_skew = '極端偏斜' in indicators or '高度偏斜' in indicators
-    if has_good_apy and has_good_skew:
-        explosive_score += 15  # APY + 偏斜複合加分
+    # 三重組合加成
+    if has_high_funding and has_oi_growth and has_low_zone:
+        explosive_score += 20  # 資金費率 + OI增長 + 低價區 = 完美組合
+        indicators.append('完美三重組合')
+    elif (has_high_funding and has_oi_growth) or (has_good_apy and has_good_skew):
+        explosive_score += 15  # 雙重組合
+        indicators.append('雙重組合')
     
     # 爆發性模式判定：需要達到60分以上
     return explosive_score >= 60
@@ -696,7 +743,9 @@ async def collect_signals_async(filter_promising=True):
             apr_data = row.get('compound_apr', 0)
             price_skew_data = row.get('price_skew_data', {})
             
-            score, factors = calculate_signal_score(row, smc_analysis, row['symbol'], apr_data, price_skew_data)
+            funding_rate = row.get('funding_rate')
+            oi_data = row.get('oi_data')
+            score, factors = calculate_signal_score(row, smc_analysis, row['symbol'], apr_data, price_skew_data, funding_rate, oi_data)
             temp_scores.append(score)
             temp_factors.append(factors)
         
