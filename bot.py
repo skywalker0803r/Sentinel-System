@@ -220,6 +220,64 @@ async def get_token_rate_async(session, symbol: str):
                 # print(f"取得 {symbol} 年利率失敗: {e}")
                 return None
 
+async def get_funding_rate_async(session, symbol: str):
+    """獲取最新的資金費率"""
+    async with semaphore:
+        async with token_rate_limiter:
+            base_url = "https://api.gateio.ws/api/v4"
+            url = f"{base_url}/futures/usdt/funding_rate"
+            params = {
+                'contract': symbol,
+                'limit': 1
+            }
+            try:
+                async with session.get(url, params=params) as r:
+                    r.raise_for_status()
+                    data = await r.json()
+                    if data:
+                        rate_info = data[0]
+                        funding_rate = float(rate_info['r'])
+                        return funding_rate
+                    return None
+            except Exception as e:
+                # print(f"取得 {symbol} 資金費率失敗: {e}")
+                return None
+
+async def get_oi_growth_rate_async(session, symbol: str):
+    """獲取OI增長率"""
+    async with semaphore:
+        async with token_rate_limiter:
+            base_url = "https://api.gateio.ws/api/v4"
+            url = f"{base_url}/futures/usdt/contract_stats"
+            params = {
+                'contract': symbol,
+                'interval': '1h',
+                'limit': 2
+            }
+            try:
+                async with session.get(url, params=params) as r:
+                    r.raise_for_status()
+                    data = await r.json()
+                    if data and len(data) >= 2:
+                        prev_stat = data[1]
+                        curr_stat = data[0]
+                        
+                        prev_oi = prev_stat.get('open_interest', 0)
+                        curr_oi = curr_stat.get('open_interest', 0)
+                        
+                        if prev_oi > 0:
+                            oi_change = curr_oi - prev_oi
+                            oi_growth_rate = (oi_change / prev_oi) * 100
+                            return {
+                                'growth_rate': oi_growth_rate,
+                                'current_oi': curr_oi,
+                                'current_oi_usd': curr_stat.get('open_interest_usd')
+                            }
+                    return None
+            except Exception as e:
+                # print(f"取得 {symbol} OI增長率失敗: {e}")
+                return None
+
 # 維持 Vegas 通道偵測的同步邏輯
 def detect_vegas_turning_points(df):
     if df is None or len(df) < 676:
@@ -613,12 +671,11 @@ async def collect_signals_async(filter_promising=True):
             
             apr_map = {res['symbol']: res['compound_apr'] for res in apr_results if res}
             final_df['compound_apr'] = final_df['symbol'].apply(lambda x: apr_map.get(x.split('_')[0]))
-        
-        # 計算綜合評分
-        scores = []
-        score_factors = []
-        smc_data = []
-        skew_data = []
+
+        # 先進行基礎評分，篩選出有潛力的訊號
+        print("🔍 正在計算基礎技術評分...")
+        temp_scores = []
+        temp_factors = []
         
         for idx, row in final_df.iterrows():
             smc_analysis = row.get('smc_analysis', {})
@@ -626,14 +683,50 @@ async def collect_signals_async(filter_promising=True):
             price_skew_data = row.get('price_skew_data', {})
             
             score, factors = calculate_signal_score(row, smc_analysis, row['symbol'], apr_data, price_skew_data)
-            scores.append(score)
-            score_factors.append(factors)
-            smc_data.append(smc_analysis)
-            skew_data.append(price_skew_data)
+            temp_scores.append(score)
+            temp_factors.append(factors)
         
-        final_df['signal_score'] = scores
-        final_df['score_factors'] = score_factors
-        final_df['smc_data'] = smc_data
+        final_df['temp_score'] = temp_scores
+        final_df['temp_factors'] = temp_factors
+        
+        # 只對高分訊號（例如>40分）獲取資金費率和OI數據，減少API調用
+        high_score_df = final_df[final_df['temp_score'] > 30].copy()  # 降低門檻以確保有足夠數據
+        
+        if len(high_score_df) > 0:
+            print(f"📊 正在為{len(high_score_df)}個高分訊號獲取資金費率和OI增長率數據...")
+            high_score_symbols = high_score_df['symbol'].unique()
+            
+            # 獲取資金費率
+            funding_tasks = [get_funding_rate_async(session, symbol) for symbol in high_score_symbols]
+            funding_results = await asyncio.gather(*funding_tasks, return_exceptions=True)
+            funding_map = {}
+            for symbol, result in zip(high_score_symbols, funding_results):
+                if not isinstance(result, Exception) and result is not None:
+                    funding_map[symbol] = result
+            
+            # 獲取OI增長率
+            oi_tasks = [get_oi_growth_rate_async(session, symbol) for symbol in high_score_symbols]
+            oi_results = await asyncio.gather(*oi_tasks, return_exceptions=True)
+            oi_map = {}
+            for symbol, result in zip(high_score_symbols, oi_results):
+                if not isinstance(result, Exception) and result is not None:
+                    oi_map[symbol] = result
+            
+            # 添加到DataFrame（所有數據，但只有高分的有值）
+            final_df['funding_rate'] = final_df['symbol'].apply(lambda x: funding_map.get(x))
+            final_df['oi_data'] = final_df['symbol'].apply(lambda x: oi_map.get(x))
+        else:
+            print("⚠️ 沒有找到高分訊號，跳過資金費率和OI數據獲取")
+            final_df['funding_rate'] = None
+            final_df['oi_data'] = None
+        
+        # 使用已計算的評分，清理臨時欄位
+        final_df['signal_score'] = final_df['temp_score']
+        final_df['score_factors'] = final_df['temp_factors']
+        final_df['smc_data'] = final_df['smc_analysis']
+        
+        # 清理臨時欄位
+        final_df = final_df.drop(['temp_score', 'temp_factors'], axis=1)
 
         return final_df
 
@@ -683,8 +776,45 @@ async def send_enhanced_signals(filter_promising=True):
     long_signals = ['LONG_BREAKOUT', 'LONG_BOUNCE', 'SMC_BULLISH', 'SKEW_SMC_BULLISH']
     final_df = final_df[final_df['vegas_signal'].isin(long_signals)]
     
-    # 按評分排序，取TOP 10
-    final_df = final_df.sort_values(by='signal_score', ascending=False).head(10)
+    # 創建綜合排序分數，考慮資金費率和OI增長率
+    def calculate_sort_score(row):
+        base_score = row['signal_score']
+        
+        # 資金費率加分項（正值表示多頭情緒）
+        funding_bonus = 0
+        if pd.notna(row['funding_rate']):
+            funding_rate = row['funding_rate']
+            if funding_rate > 0:  # 正資金費率（多頭支付空頭）
+                if funding_rate > 0.01:  # >1%極高
+                    funding_bonus = 15
+                elif funding_rate > 0.005:  # >0.5%高
+                    funding_bonus = 10
+                elif funding_rate > 0.001:  # >0.1%中等
+                    funding_bonus = 5
+            # 負資金費率可能表示逆向機會，給小加分
+            elif funding_rate < -0.001:  # <-0.1%
+                funding_bonus = 3
+        
+        # OI增長率加分項（正值表示資金流入）
+        oi_bonus = 0
+        if pd.notna(row['oi_data']) and isinstance(row['oi_data'], dict):
+            growth_rate = row['oi_data'].get('growth_rate', 0)
+            if growth_rate > 10:  # >10%極高增長
+                oi_bonus = 15
+            elif growth_rate > 5:  # >5%高增長
+                oi_bonus = 10
+            elif growth_rate > 1:  # >1%中等增長
+                oi_bonus = 5
+            elif growth_rate > 0:  # 正增長
+                oi_bonus = 2
+        
+        return base_score + funding_bonus + oi_bonus
+    
+    # 計算綜合排序分數
+    final_df['sort_score'] = final_df.apply(calculate_sort_score, axis=1)
+    
+    # 按綜合排序分數排序，取TOP 10
+    final_df = final_df.sort_values(by='sort_score', ascending=False).head(10)
 
     # 統計數據
     total_signals = len(final_df)
@@ -745,9 +875,45 @@ async def send_enhanced_signals(filter_promising=True):
             if zone_info:
                 zone_display = f"\n     🔴`{zone_info['high_price_zone']}` 🟢`{zone_info['low_price_zone']}`"
             
+            # 獲取資金費率和OI增長率信息
+            funding_rate = row.get('funding_rate')
+            oi_data = row.get('oi_data')
+            
+            funding_str = f"{funding_rate:.4%}" if funding_rate is not None else "N/A"
+            oi_growth_str = "N/A"
+            if oi_data and isinstance(oi_data, dict):
+                growth_rate = oi_data.get('growth_rate', 0)
+                oi_growth_str = f"{growth_rate:+.2f}%"
+            
+            # 獲取綜合排序分數
+            sort_score = row.get('sort_score', score)
+            sort_bonus = sort_score - score
+            
+            # 資金費率和OI增長率的特殊標註
+            funding_tag = ""
+            oi_tag = ""
+            
+            if funding_rate is not None:
+                if funding_rate > 0.01:
+                    funding_tag = " 🔥"
+                elif funding_rate > 0.005:
+                    funding_tag = " ⬆️"
+                elif funding_rate < -0.001:
+                    funding_tag = " 🔄"
+            
+            if oi_data and isinstance(oi_data, dict):
+                growth_rate = oi_data.get('growth_rate', 0)
+                if growth_rate > 10:
+                    oi_tag = " 🚀"
+                elif growth_rate > 5:
+                    oi_tag = " 📈"
+                elif growth_rate > 1:
+                    oi_tag = " ⬆️"
+            
             top_signals.append(
-                f"{rank_emoji}`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分`\n"
+                f"{rank_emoji}`{i}.` **{row['symbol']}** {signal_emoji} `{score:.0f}分` `(+{sort_bonus:.0f})`\n"
                 f"     💰 `${row['close']:.6f}` | 📊 `{signal_name}` | 🏦 `{apr_str}`\n"
+                f"     💸 資金費率: `{funding_str}`{funding_tag} | 📈 OI增長: `{oi_growth_str}`{oi_tag}\n"
                 f"     🎯 {smc_highlights}{zone_display}{explosive_tag}\n"
                 f"     📊 **評分明細**: {score_breakdown}"
             )
@@ -798,6 +964,20 @@ async def send_enhanced_signals(filter_promising=True):
     main_embed.add_field(
         name="📊 SMC 價格區間說明",
         value="```\n🔴 高價區: 70%-100% 價格範圍 (賣出區域)\n🟢 低價區: 0%-30% 價格範圍 (買入區域)\n🟡 平衡區: 30%-70% 價格範圍 (觀望區域)\n\n基於過去100根K線的高低點計算\n適合設定止盈止損參考點位```",
+        inline=False
+    )
+    
+    # 添加資金費率和OI增長率說明
+    main_embed.add_field(
+        name="💸 資金費率 & 📈 OI增長率說明 (NEW!)",
+        value="```\n💸 資金費率 (Funding Rate):\n• 永續合約多空平衡指標\n• 正值: 多頭支付空頭 (看漲情緒)\n• 負值: 空頭支付多頭 (看跌情緒)\n• 🔥>1% 極高 (+15分) | ⬆️>0.5% 高 (+10分)\n• 🔄<-0.1% 逆向機會 (+3分)\n\n📈 OI增長率 (Open Interest Growth):\n• 未平倉合約量變化\n• 正值: 新資金流入，趨勢可能延續\n• 🚀>10% 極高 (+15分) | 📈>5% 高 (+10分)\n• ⬆️>1% 中等 (+5分) | >0% 小幅 (+2分)```",
+        inline=False
+    )
+    
+    # 添加綜合排序說明
+    main_embed.add_field(
+        name="🎯 綜合排序說明 (NEW!)",
+        value="```\n排序邏輯:\n基礎技術評分 + 資金費率加分 + OI增長率加分\n\n顯示格式:\n• 基礎分數: 技術分析綜合評分\n• (+加分): 資金費率和OI增長率額外加分\n• 特殊標誌: 🔥🚀📈⬆️🔄 表示不同等級\n\n優勢:\n• 優先推薦有資金流入和多頭情緒的幣種\n• 結合技術面和資金面的雙重確認\n• 提高爆發性機會的識別準確度```",
         inline=False
     )
     
