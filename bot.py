@@ -426,11 +426,11 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_s
         else:  # 直接傳入字符串
             signal_type = vegas_signal
             
-        if signal_type in ['LONG_BREAKOUT', 'SHORT_BREAKDOWN']:
-            score += 15  # 突破訊號較強
+        if signal_type in ['LONG_BREAKOUT']:
+            score += 20  # 突破訊號較強
             factors['vegas_breakout'] = 15
             explosive_indicators.append('強勢突破')
-        elif signal_type in ['LONG_BOUNCE', 'SHORT_FAILED_BOUNCE']:
+        elif signal_type in ['LONG_BOUNCE']:
             score += 15  # 反彈訊號較弱
             factors['vegas_bounce'] = 15
     
