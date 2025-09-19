@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 
 # ===== 獲取真實比特幣數據用於Order Blocks分析 =====
 print("=== Order Blocks 分析 - 使用真實BTC數據 ===")
-df = get_btc_data('BTC_USDT', '2h', 180)  # 獲取180根2小時K線
+df = get_btc_data('BTC_USDT', '1h', 180)  # 獲取180根2小時K線
 
 print(f"\n真實BTC數據:")
 print(df[['time', 'open', 'high', 'low', 'close', 'volume']].head(10))
@@ -104,119 +104,66 @@ if bullish_obs:
 else:
     print("❌ 未檢測到看漲Order Block")
     print("📊 建議等待明確的需求區域形成")
-
+order_blocks = bullish_obs
 # 繪製Order Blocks圖表
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 12), height_ratios=[4, 1])
-
-# 上圖：K線圖 + Order Blocks
-for i, (o, h, l, c) in enumerate(zip(df['open'], df['high'], df['low'], df['close'])):
-    color = 'green' if c >= o else 'red'
-    alpha = 0.8
+if order_blocks: # 只有當檢測到Order Block時才繪圖
+    latest_ob = order_blocks[-1] # 獲取最新偵測到的Order Block
     
-    # 繪制影線
-    ax1.plot([i, i], [l, h], color=color, linewidth=1, alpha=alpha)
-    
-    # 繪制實體
-    body_height = abs(c - o)
-    body_bottom = min(o, c)
-    ax1.add_patch(patches.Rectangle((i-0.3, body_bottom), 0.6, body_height,
-                                   facecolor=color, edgecolor=color, alpha=alpha))
-
-# 標記Order Blocks - 只顯示最新的1個活躍OB
-active_obs = [ob for ob in bullish_obs if ob['active']]
-recent_obs = active_obs[-1:] if active_obs else []  # 只取最新1個
-
-colors = ['lime']
-for i, ob in enumerate(recent_obs):
-    # 找到對應的時間索引
-    ob_time = pd.to_datetime(ob['time'])
-    time_diff = abs(df['time'] - ob_time)
-    ob_idx = time_diff.idxmin()
-    
-    color = colors[i % len(colors)]
-    alpha = 0.7  # 統一使用較高透明度
-    
-    # Order Block - 找到區域內最低K線，從下影線到實體
-    # 獲取OB檢測的價格範圍
-    ob_range_low = ob['low']
-    ob_range_high = ob['high']
-    
-    # 在OB價格範圍內找到最低的K線
-    # 找到在OB時間點附近的K線範圍
-    search_range = 10  # 前後搜索10根K線
-    start_idx = max(0, ob_idx - search_range)
-    end_idx = min(len(df), ob_idx + search_range)
-    
-    # 在這個範圍內找到最低點的K線
-    lowest_idx = start_idx
-    lowest_low = df['low'].iloc[start_idx]
-    
-    for idx in range(start_idx, end_idx):
-        if df['low'].iloc[idx] < lowest_low:
-            lowest_low = df['low'].iloc[idx]
-            lowest_idx = idx
-    
-    # 獲取最低K線的資料
-    lowest_candle_low = df['low'].iloc[lowest_idx]      # 下影線低點
-    lowest_candle_open = df['open'].iloc[lowest_idx]
-    lowest_candle_close = df['close'].iloc[lowest_idx]
-    
-    # OB區域：從下影線低點到實體頂部
-    ob_bottom = lowest_candle_low
-    ob_top = max(lowest_candle_open, lowest_candle_close)  # 實體頂部
-    
-    print(f"DEBUG: 找到最低K線在索引 {lowest_idx}")
-    print(f"DEBUG: OB區域 ${ob_bottom:.2f} (下影線) - ${ob_top:.2f} (實體頂)")
-    
-    # 繪制OB長方形區域 - 綠色透明
-    rect_width = 15  # 覆蓋15根K線，形成明顯的區域
-    rect = patches.Rectangle((ob_idx - rect_width//2, ob_bottom), 
-                           rect_width, ob_top - ob_bottom,
-                           facecolor='lime', alpha=0.2, 
-                           edgecolor='lime', linewidth=2)
-    ax1.add_patch(rect)
-    
-    # 添加標籤（放在OB區域上方）
-    label_text = f"Latest OB\nStr:{ob['strength']}"
+    # 確定最新OB的K線索引
+    ob_time_idx = df[df['time'] == latest_ob['time']].index
+    if len(ob_time_idx) > 0:
+        ob_idx = ob_time_idx[0]
         
-    ax1.text(ob_idx, ob_top + (df['high'].max() - df['low'].min()) * 0.01,
-             label_text, ha='center', va='bottom', 
-             color='lime', fontweight='bold', fontsize=9,
-             bbox=dict(boxstyle="round,pad=0.3", facecolor='white', 
-                      edgecolor='lime', alpha=0.9))
+        # 定義繪圖範圍：OB前後各50根K線
+        buffer = 50 
+        plot_start_idx = max(0, ob_idx - buffer)
+        plot_end_idx = min(len(df), ob_idx + buffer + 1) # +1 確保包含結束K線
+        
+        plot_df = df.iloc[plot_start_idx:plot_end_idx].copy()
+        
+        fig, ax = plt.subplots(figsize=(14, 6)) # 使用單一子圖
+        
+        # 繪製縮放後的K線圖
+        for i, (o, h, l, c) in enumerate(zip(plot_df['open'], plot_df['high'], plot_df['low'], plot_df['close'])):
+            color = 'green' if c >= o else 'red'
+            ax.plot([i, i], [l, h], color=color, linewidth=1)
+            ax.add_patch(patches.Rectangle((i-0.3, min(o, c)), 0.6, abs(c-o), facecolor=color, edgecolor=color))
 
-ax1.set_title("Order Blocks Analysis - Bullish Focus", fontsize=14, fontweight='bold')
-ax1.set_ylabel("Price ($)", fontsize=12)
-ax1.grid(True, alpha=0.3)
+        # 繪製Order Blocks (只繪製在縮放範圍內的OB)
+                # 繪製最新的Order Block
+        ob = latest_ob # 直接使用latest_ob
+        
+        ob_orig_idx = df[df['time'] == ob['time']].index[0]
+        # 確保最新的OB在縮放範圍內 (理論上應該是，因為我們就是圍繞它縮放的)
+        if plot_start_idx <= ob_orig_idx < plot_end_idx:
+            ob_local_idx = ob_orig_idx - plot_start_idx
+            
+            ob_color = 'blue' if 'BULLISH' in ob['type'] else 'red'
+            
+            # 計算寬度以延伸到右邊緣
+            rect_width = len(plot_df) - ob_local_idx # 從OB位置延伸到plot_df的末尾
+            
+            ax.add_patch(patches.Rectangle(
+                (ob_local_idx - 0.5, ob['low']), rect_width, # 使用計算出的寬度
+                ob['high'] - ob['low'],
+                facecolor=ob_color, alpha=0.3, edgecolor=ob_color, linewidth=1
+            ))
+            
+            # 添加文字標記
+            ax.text(ob_local_idx, ob['high'] + (plot_df['high'].max() - plot_df['low'].min()) * 0.01,
+                    'OB', 
+                    color=ob_color, fontweight='bold', fontsize=9,
+                    ha='center', va='bottom')
+        
+        ax.set_title(f"Order Blocks (OB) - Latest OB at {latest_ob['time']}")
+        ax.set_xlabel("Candle Index (Zoomed)")
+        ax.set_ylabel("Price ($)")
+        plt.savefig('order_blocks_analysis.png', dpi=150, bbox_inches='tight')
+        print("圖表已保存為 order_blocks_analysis.png")
+        plt.show()
+    else:
+        print("未找到最新Order Block的對應K線索引。")
+else:
+    print("未檢測到任何Order Block，無法繪圖。")
 
-# 添加圖例
-legend_elements = [
-    patches.Patch(color='lime', alpha=0.6, label='Active Bullish OB'),
-    patches.Patch(color='lime', alpha=0.3, label='Inactive Bullish OB')
-]
-ax1.legend(handles=legend_elements, loc='upper left')
-
-# 下圖：成交量
-volume_colors = ['green' if c >= o else 'red' for o, c in zip(df['open'], df['close'])]
-bars = ax2.bar(range(len(df)), df['volume'], color=volume_colors, alpha=0.6)
-
-# 突出顯示最近OB位置的成交量
-for ob in recent_obs:
-    ob_time = pd.to_datetime(ob['time'])
-    time_diff = abs(df['time'] - ob_time)
-    ob_idx = time_diff.idxmin()
-    bars[ob_idx].set_alpha(1.0)
-    bars[ob_idx].set_edgecolor('yellow')
-    bars[ob_idx].set_linewidth(2)
-
-ax2.set_title("Volume (OB Locations Highlighted)", fontsize=12)
-ax2.set_ylabel("Volume", fontsize=10)
-ax2.set_xlabel("Time (Candle Index)", fontsize=10)
-
-plt.tight_layout()
-plt.savefig('order_blocks_analysis.png', dpi=150, bbox_inches='tight')
-print("圖表已保存為 order_blocks_analysis.png")
-plt.show()
-
-print(f"\n=== 測試完成 ===")
-print("圖表已顯示並保存Order Blocks分析結果")
+print(order_blocks)
