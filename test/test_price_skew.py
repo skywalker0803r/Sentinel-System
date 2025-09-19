@@ -48,11 +48,11 @@ if __name__ == "__main__":
     # Fallback to BTC if the primary symbol fails
     SYMBOL_TO_TEST = 'GPT_USDT' 
     FALLBACK_SYMBOL = None
-    DATA_POINTS = 300
-    LOOKBACK = 100
+    DATA_POINTS = 1000
+    LOOKBACK = 1000
 
     # --- Data Fetching ---
-    df = get_btc_data(symbol=SYMBOL_TO_TEST, interval='1h', limit=DATA_POINTS)
+    df = get_btc_data(symbol=SYMBOL_TO_TEST, interval='1h', total_candles=DATA_POINTS)
     if df is None or len(df) < LOOKBACK:
         print(f"Could not fetch sufficient data for {SYMBOL_TO_TEST}. Falling back to {FALLBACK_SYMBOL}.")
         df = get_btc_data(symbol=FALLBACK_SYMBOL, interval='1h', limit=DATA_POINTS)
