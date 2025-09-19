@@ -49,7 +49,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
             'future_max_close': future_max_close
         }
     
-    def _compute_swing_points(self, df: pd.DataFrame, window: int = 10) -> Tuple[np.ndarray, np.ndarray]:
+    def _compute_swing_points(self, df: pd.DataFrame, window: int = 5) -> Tuple[np.ndarray, np.ndarray]:
         """快速計算swing points - 向量化版本"""
         high_values = df['high'].values
         low_values = df['low'].values
@@ -70,7 +70,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
                 
         return swing_highs, swing_lows
     
-    def detect_market_structure(self, df: pd.DataFrame, lookback: int = 50) -> Dict:
+    def detect_market_structure(self, df: pd.DataFrame, lookback: int = 30) -> Dict:
         """檢測市場結構：BOS 和 CHoCH - 優化版 O(n)"""
         if df is None or len(df) < lookback:
             return {'bos_signals': [], 'choch_signals': [], 'trend': None}
@@ -82,7 +82,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
             df['atr'] = self._calculate_atr(df, 14)
         
         # 使用優化的swing points計算
-        window = lookback//2
+        window = max(3, lookback//10)  # 減少窗口大小，增加敏感度
         swing_highs, swing_lows = self._compute_swing_points(df, window)
         
         # 獲取swing價格
@@ -94,7 +94,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
         current_trend = None
         current_price = df['close'].iloc[-1]
         
-        # 檢測結構突破 - 只檢查最近的swing points
+        # 檢測結構突破 - 只關注看漲信號（機器人只做多）
         if len(swing_high_prices) >= 2:
             recent_highs = swing_high_prices.tail(2)
             last_high = recent_highs.iloc[-1]
@@ -108,31 +108,18 @@ class OptimizedSmartMoneyConceptsAnalyzer:
                     'description': f'突破前高 ${last_high:.6f}'
                 })
                 current_trend = self.BULLISH
-                
-            elif current_price < prev_high and last_high > prev_high:
-                choch_signals.append({
-                    'type': 'CHOCH_BEARISH',
-                    'price': current_price,
-                    'strength': self._calculate_structure_strength_fast(df),
-                    'description': f'跌破前高支撐 ${prev_high:.6f}'
-                })
-                current_trend = self.BEARISH
         
         if len(swing_low_prices) >= 2:
             recent_lows = swing_low_prices.tail(2)
             last_low = recent_lows.iloc[-1]
             prev_low = recent_lows.iloc[-2]
             
-            if current_price < last_low and last_low < prev_low:
-                bos_signals.append({
-                    'type': 'BOS_BEARISH',
-                    'price': current_price,
-                    'strength': self._calculate_structure_strength_fast(df),
-                    'description': f'跌破前低 ${last_low:.6f}'
-                })
-                current_trend = self.BEARISH
-                
-            elif current_price > prev_low and last_low < prev_low:
+            # 放寬CHoCH檢測條件，讓它更容易觸發
+            price_above_prev_low = current_price > prev_low
+            lower_low_created = last_low < prev_low
+            significant_recovery = current_price > last_low * 1.05  # 5%以上的恢復
+            
+            if price_above_prev_low and (lower_low_created or significant_recovery):
                 choch_signals.append({
                     'type': 'CHOCH_BULLISH',
                     'price': current_price,
@@ -195,9 +182,8 @@ class OptimizedSmartMoneyConceptsAnalyzer:
         end_idx = len(df) - 5
         
         for i in range(start_idx, end_idx):
-            # 快速檢查是否為反轉點
+            # 只檢查看漲 Order Block（機器人只做多）
             is_bullish_ob = self._is_bullish_order_block_fast(df, i, closes, opens)
-            is_bearish_ob = self._is_bearish_order_block_fast(df, i, closes, opens)
             
             if is_bullish_ob:
                 ob_high = highs[i]
@@ -219,24 +205,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
                             'description': f'看漲訂單區塊 ${ob_low:.6f}-${ob_high:.6f}'
                         })
             
-            if is_bearish_ob:
-                ob_high = highs[i]
-                ob_low = lows[i]
-                
-                if (ob_high - ob_low) > current_atr * 0.5:
-                    # 使用預計算的數據檢查活躍性
-                    is_active = future_extremes['future_max_high'][i] <= ob_high
-                    
-                    if is_active:
-                        order_blocks.append({
-                            'type': 'BEARISH_OB',
-                            'high': ob_high,
-                            'low': ob_low,
-                            'time': df.get('time', pd.Series(range(len(df)))).iloc[i],
-                            'strength': self._calculate_ob_strength_fast(df, i),
-                            'active': True,
-                            'description': f'看跌訂單區塊 ${ob_low:.6f}-${ob_high:.6f}'
-                        })
+            # 跳過看跌 Order Block 檢測（機器人只做多）
         
         # 按強度排序，返回前10個
         return sorted(order_blocks, key=lambda x: x['strength'], reverse=True)[:10]
@@ -323,9 +292,9 @@ class OptimizedSmartMoneyConceptsAnalyzer:
                 gap_low = prev_high
                 gap_size = gap_high - gap_low
                 
-                # 快速顯著性檢查
+                # 快速顯著性檢查 - 降低門檻讓更多FVG被檢測到
                 atr_value = atr_values[i] if not np.isnan(atr_values[i]) else gap_size * 2
-                if gap_size > atr_value * 0.1:
+                if gap_size > atr_value * 0.05:
                     # 使用預計算數據檢查是否被填補 - O(1)操作
                     filled = self._is_fvg_filled_fast(future_extremes, i, gap_low, gap_high)
                     
@@ -338,27 +307,6 @@ class OptimizedSmartMoneyConceptsAnalyzer:
                             'time': df.get('time', pd.Series(range(len(df)))).iloc[i],
                             'filled': False,
                             'description': f'看漲缺口 ${gap_low:.6f}-${gap_high:.6f}'
-                        })
-            
-            # 檢測看跌 FVG (向下缺口)
-            elif (prev_low > next_high and curr_close < curr_open):
-                gap_high = prev_low
-                gap_low = next_high
-                gap_size = gap_high - gap_low
-                
-                atr_value = atr_values[i] if not np.isnan(atr_values[i]) else gap_size * 2
-                if gap_size > atr_value * 0.1:
-                    filled = self._is_fvg_filled_fast(future_extremes, i, gap_low, gap_high)
-                    
-                    if not filled:
-                        fvg_list.append({
-                            'type': 'BEARISH_FVG',
-                            'high': gap_high,
-                            'low': gap_low,
-                            'size': gap_size,
-                            'time': df.get('time', pd.Series(range(len(df)))).iloc[i],
-                            'filled': False,
-                            'description': f'看跌缺口 ${gap_low:.6f}-${gap_high:.6f}'
                         })
         
         # 返回最近10個未填補的缺口
@@ -373,8 +321,15 @@ class OptimizedSmartMoneyConceptsAnalyzer:
         future_min = future_extremes['future_min_low'][gap_index]
         future_max = future_extremes['future_max_high'][gap_index]
         
-        # 檢查未來價格是否重新進入缺口區域
-        return future_min <= gap_high and future_max >= gap_low
+        # 更寬鬆的填補檢查：只有當價格明顯穿越缺口中心時才認為被填補
+        gap_center = (gap_low + gap_high) / 2
+        gap_size = gap_high - gap_low
+        
+        # 對於看漲FVG，檢查是否有明顯回調進入缺口
+        if gap_size > 0:
+            return (future_min < gap_center) and (future_max > gap_center)
+        
+        return False
     
     def detect_equal_highs_lows(self, df: pd.DataFrame, threshold: float = 0.001) -> Dict:
         """檢測 Equal Highs/Lows - 優化版"""
@@ -472,25 +427,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
             max_prev_high = np.max(prev_highs)
             min_prev_low = np.min(prev_lows)
             
-            # 檢查掃蕩賣方流動性
-            if highs[i] > max_prev_high:
-                sweep_distance = highs[i] - max_prev_high
-                if sweep_distance > current_atr * 0.2:
-                    min_next_close = np.min(next_closes)
-                    max_drawdown = highs[i] - min_next_close
-                    
-                    if min_next_close < max_prev_high and max_drawdown > current_atr * 0.5:
-                        sweeps.append({
-                            'type': 'SELL_SIDE_LIQUIDITY',
-                            'price': highs[i],
-                            'swept_level': max_prev_high,
-                            'sweep_distance': sweep_distance,
-                            'max_drawdown': max_drawdown,
-                            'time': df.get('time', pd.Series(range(len(df)))).iloc[i],
-                            'description': f'掃蕩賣方流動性 ${max_prev_high:.6f} (回撤 {max_drawdown:.6f})'
-                        })
-            
-            # 檢查掃蕩買方流動性
+            # 只檢查掃蕩買方流動性（對多頭有利的信號）
             if lows[i] < min_prev_low:
                 sweep_distance = min_prev_low - lows[i]
                 if sweep_distance > current_atr * 0.2:
@@ -507,6 +444,8 @@ class OptimizedSmartMoneyConceptsAnalyzer:
                             'time': df.get('time', pd.Series(range(len(df)))).iloc[i],
                             'description': f'掃蕩買方流動性 ${min_prev_low:.6f} (反彈 {max_recovery:.6f})'
                         })
+            
+            # 跳過賣方流動性掃蕩檢測（機器人只做多）
         
         return sweeps[-10:]
     
