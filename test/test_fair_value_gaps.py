@@ -17,7 +17,7 @@ print("=== Fair Value Gaps (FVG) 分析 - 使用真實BTC數據 ===")
 print("正在嘗試不同時間框架來檢測FVG...")
 
 # 先嘗試15分鐘K線（更容易出現FVG）
-df = get_btc_data('BTC_USDT', '15m', 200)
+df = get_btc_data('BTC_USDT', '1h', 1000)
 analyzer = OptimizedSmartMoneyConceptsAnalyzer()
 fvg_list = analyzer.detect_fair_value_gaps(df)
 
@@ -67,44 +67,57 @@ print("✅ 設置止損在FVG下方")
 print("✅ 目標價位在下一個阻力位")
 
 # ===== 畫蠟燭圖 =====
-fig, ax = plt.subplots(figsize=(14, 6))
-
-for i, (o, h, l, c) in enumerate(zip(df['open'], df['high'], df['low'], df['close'])):
-    color = 'green' if c >= o else 'red'
-    ax.plot([i, i], [l, h], color=color, linewidth=1)
-    ax.add_patch(patches.Rectangle((i-0.3, min(o, c)), 0.6, abs(c-o),
-                                   facecolor=color, edgecolor=color))
-
-# 標記 FVG - 只顯示最新的1個
-recent_fvgs = fvg_list[:] if fvg_list else []
-
-for i, fvg in enumerate(recent_fvgs):
-    # 用 iloc 找對應 index
-    fvg_time_idx = df[df['time'] == fvg['time']].index
+if fvg_list: # 只有當檢測到FVG時才繪圖
+    latest_fvg = fvg_list[-1] # 獲取最新偵測到的FVG
+    
+    # 確定最新FVG的K線索引
+    fvg_time_idx = df[df['time'] == latest_fvg['time']].index
     if len(fvg_time_idx) > 0:
-        idx = fvg_time_idx[0]
+        fvg_idx = fvg_time_idx[0]
         
-        # 只顯示看漲FVG（綠色）
+        # 定義繪圖範圍：FVG前後各50根K線
+        buffer = 50 
+        plot_start_idx = max(0, fvg_idx - buffer)
+        plot_end_idx = min(len(df), fvg_idx + buffer + 1) # +1 確保包含結束K線
+        
+        plot_df = df.iloc[plot_start_idx:plot_end_idx].copy()
+        
+        fig, ax = plt.subplots(figsize=(14, 6))
+        
+        # 繪製縮放後的K線圖
+        for i, (o, h, l, c) in enumerate(zip(plot_df['open'], plot_df['high'], plot_df['low'], plot_df['close'])):
+            color = 'green' if c >= o else 'red'
+            ax.plot([i, i], [l, h], color=color, linewidth=1)
+            ax.add_patch(patches.Rectangle((i-0.3, min(o, c)), 0.6, abs(c-o), facecolor=color, edgecolor=color))
+
+        # 繪製最新的FVG
+        fvg = latest_fvg # 使用latest_fvg的數據
         fvg_color = 'lime'
         
+        # 將FVG的原始索引轉換為在plot_df中的局部索引
+        fvg_local_idx = fvg_idx - plot_start_idx
+        
         ax.add_patch(patches.Rectangle(
-            (idx-1, fvg['low']), 5,  # 寬度覆蓋 5 根 K 線
+            (fvg_local_idx - 1, fvg['low']), 5,  # 寬度覆蓋 5 根 K 線
             fvg['high'] - fvg['low'],
             facecolor=fvg_color, alpha=0.3, edgecolor=fvg_color, linewidth=2
         ))
         
         # 添加文字標記
-        ax.text(idx, fvg['high'] + (df['high'].max() - df['low'].min()) * 0.01, 
-                f'Latest FVG\n${fvg["size"]:.0f}', 
-                color=fvg_color, fontweight='bold', fontsize=9,
-                ha='center', va='bottom',
-                bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8))
-
-ax.set_title("Fair Value Gaps (FVG) - Bullish Only")
-ax.set_xlabel("Candle Index")
-ax.set_ylabel("Price ($)")
-plt.savefig('fair_value_gaps_analysis.png', dpi=150, bbox_inches='tight')
-print("圖表已保存為 fair_value_gaps_analysis.png")
-plt.show()
+        ax.text(fvg_local_idx + 0.5, fvg['low'] + (fvg['high'] - fvg['low']) / 2,
+                'FVG', 
+                color=fvg_color, fontweight='bold', fontsize=8,
+                ha='left', va='center')
+        
+        ax.set_title(f"Fair Value Gaps (FVG) - Latest FVG at {latest_fvg['time']}")
+        ax.set_xlabel("Candle Index (Zoomed)")
+        ax.set_ylabel("Price ($)")
+        plt.savefig('fair_value_gaps_analysis.png', dpi=150, bbox_inches='tight')
+        print("圖表已保存為 fair_value_gaps_analysis.png")
+        plt.show()
+    else:
+        print("未找到最新FVG的對應K線索引。")
+else:
+    print("未檢測到任何FVG，無法繪圖。")
 
 print(fvg_list)
