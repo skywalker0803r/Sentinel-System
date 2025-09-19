@@ -504,13 +504,29 @@ class OptimizedSmartMoneyConceptsAnalyzer:
         high_price = recent_data['high'].max()
         low_price = recent_data['low'].min()
         range_size = high_price - low_price
-        
-        # 定義區域
+
+        # 定義區域的初始值
         premium_zone_start = low_price + range_size * 0.7
-        discount_zone_end = low_price + range_size * 0.3
+        discount_zone_start = low_price  # Default value
+        discount_zone_end = low_price + range_size * 0.3 # Default value
         equilibrium_top = low_price + range_size * 0.55
         equilibrium_bottom = low_price + range_size * 0.45
-        
+
+        # 檢測 Order Blocks
+        order_blocks = self.detect_order_blocks(df)
+        bullish_obs = [ob for ob in order_blocks if ob['type'] == 'BULLISH_OB' and ob['active']]
+
+        # 如果存在活躍的看漲 Order Block，則將其作為低價區
+        if bullish_obs:
+            # 找到最近期的 Order Block
+            most_recent_ob = max(bullish_obs, key=lambda ob: ob['time'])
+            discount_zone_start = most_recent_ob['low']
+            discount_zone_end = most_recent_ob['high']
+            # 調整整體 low_price 以確保 discount_zone 包含在整體範圍內
+            low_price = min(low_price, discount_zone_start)
+            high_price = max(high_price, discount_zone_end)
+            range_size = high_price - low_price
+
         current_price = df['close'].iloc[-1]
         
         # 判斷當前價格位置
@@ -523,7 +539,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
         
         return {
             'premium_zone': {'start': premium_zone_start, 'end': high_price},
-            'discount_zone': {'start': low_price, 'end': discount_zone_end},
+            'discount_zone': {'start': discount_zone_start, 'end': discount_zone_end},
             'equilibrium_zone': {'start': equilibrium_bottom, 'end': equilibrium_top},
             'current_zone': current_zone,
             'current_price': current_price
