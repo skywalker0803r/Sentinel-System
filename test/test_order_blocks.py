@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 
 # ===== 獲取真實比特幣數據用於Order Blocks分析 =====
 print("=== Order Blocks 分析 - 使用真實BTC數據 ===")
-df = get_btc_data('BTC_USDT', '1h', 180)  # 獲取180根2小時K線
+df = get_btc_data('MAV_USDT', '1h', 180)  # 獲取180根2小時K線
 
 print(f"\n真實BTC數據:")
 print(df[['time', 'open', 'high', 'low', 'close', 'volume']].head(10))
