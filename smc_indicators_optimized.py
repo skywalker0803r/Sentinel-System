@@ -575,7 +575,7 @@ class OptimizedSmartMoneyConceptsAnalyzer:
             # 所有分析共享預計算數據
             analysis = {
                 'market_structure': self.detect_market_structure(df),
-                'order_blocks': self.detect_order_blocks(df.tail(180)),
+                'order_blocks': self.detect_order_blocks(df),
                 'fair_value_gaps': self.detect_fair_value_gaps(df),
                 'equal_highs_lows': self.detect_equal_highs_lows(df),
                 'liquidity_sweeps': self.detect_liquidity_sweeps(df),
