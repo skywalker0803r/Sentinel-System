@@ -48,27 +48,35 @@ class OptimizedSmartMoneyConceptsAnalyzer:
             'future_min_close': future_min_close,
             'future_max_close': future_max_close
         }
-    
-    def _compute_swing_points(self, df: pd.DataFrame, window: int = 5) -> Tuple[np.ndarray, np.ndarray]:
-        """快速計算swing points - 向量化版本"""
-        high_values = df['high'].values
-        low_values = df['low'].values
-        n = len(high_values)
+
+    def _compute_swing_points(self, df: pd.DataFrame, window: int = 5) -> Tuple[pd.Series, pd.Series]:
+        """
+        真正向量化計算 swing points，並處理平頂/平底問題。
+        使用 rolling window 實現高效計算。
+        """
+        # 完整的窗口大小是 (window * 2 + 1)
+        full_window = window * 2 + 1
         
-        swing_highs = np.zeros(n, dtype=bool)
-        swing_lows = np.zeros(n, dtype=bool)
+        # 使用 rolling().max() 找到每個窗口的最高點
+        # center=True 確保當前 K 線位於窗口中心
+        rolling_max = df['high'].rolling(window=full_window, center=True).max()
+        rolling_min = df['low'].rolling(window=full_window, center=True).min()
         
-        # 向量化檢測swing points
-        for i in range(window, n - window):
-            # 檢查是否為局部最高點
-            if high_values[i] == np.max(high_values[i-window:i+window+1]):
-                swing_highs[i] = True
-            
-            # 檢查是否為局部最低點  
-            if low_values[i] == np.min(low_values[i-window:i+window+1]):
-                swing_lows[i] = True
-                
-        return swing_highs, swing_lows
+        # 條件1: 當前 K 線的 high/low 必須是其窗口內的極值
+        is_swing_high = (df['high'] == rolling_max)
+        is_swing_low = (df['low'] == rolling_min)
+        
+        # 條件2 (解決平頂/平底問題): 該 high/low 不能與前一根 K 線的 high/low 相同
+        # 這樣可以確保在一個平頂/平底結構中，只取第一個點
+        not_duplicate_high = (df['high'] != df['high'].shift(1))
+        not_duplicate_low = (df['low'] != df['low'].shift(1))
+        
+        # 最終的 swing points 必須同時滿足兩個條件
+        swing_highs = is_swing_high & not_duplicate_high
+        swing_lows = is_swing_low & not_duplicate_low
+        
+        # 函數返回的是 boolean Series，方便後續直接用 .loc 定位
+        return df.index[swing_highs], df.index[swing_lows]
     
     def detect_market_structure(self, df: pd.DataFrame, lookback: int = 30) -> Dict:
         """檢測市場結構：BOS 和 CHoCH - 優化版 O(n)"""
@@ -94,7 +102,9 @@ class OptimizedSmartMoneyConceptsAnalyzer:
         current_trend = None
         current_price = df['close'].iloc[-1]
         
-        # 檢測結構突破 - 只關注看漲信號（機器人只做多）
+        # --- 檢測市場結構 (BOS & CHoCH) ---
+        
+        # 1. 看漲BOS (Bullish BOS) - 上升趨勢延續
         if len(swing_high_prices) >= 2:
             recent_highs = swing_high_prices.tail(2)
             last_high = recent_highs.iloc[-1]
@@ -105,28 +115,64 @@ class OptimizedSmartMoneyConceptsAnalyzer:
                     'type': 'BOS_BULLISH',
                     'price': current_price,
                     'strength': self._calculate_structure_strength_fast(df),
-                    'description': f'突破前高 ${last_high:.6f}'
+                    'description': f'突破前高(HH) ${last_high:.6f}'
                 })
                 current_trend = self.BULLISH
-        
+
+        # 2. 看跌BOS (Bearish BOS) - 下降趨勢延續
         if len(swing_low_prices) >= 2:
             recent_lows = swing_low_prices.tail(2)
             last_low = recent_lows.iloc[-1]
             prev_low = recent_lows.iloc[-2]
-            
-            # 放寬CHoCH檢測條件，讓它更容易觸發
-            price_above_prev_low = current_price > prev_low
-            lower_low_created = last_low < prev_low
-            significant_recovery = current_price > last_low * 1.05  # 5%以上的恢復
-            
-            if price_above_prev_low and (lower_low_created or significant_recovery):
-                choch_signals.append({
-                    'type': 'CHOCH_BULLISH',
+
+            if current_price < last_low and last_low < prev_low:
+                bos_signals.append({
+                    'type': 'BOS_BEARISH',
                     'price': current_price,
                     'strength': self._calculate_structure_strength_fast(df),
-                    'description': f'突破前低阻力 ${prev_low:.6f}'
+                    'description': f'跌破前低(LL) ${last_low:.6f}'
                 })
-                current_trend = self.BULLISH
+                current_trend = self.BEARISH
+
+        # 3. 看漲CHoCH (Bullish CHoCH) - 從下降轉為上升
+        if len(swing_low_prices) >= 2 and not swing_high_prices.empty:
+            last_low = swing_low_prices.iloc[-1]
+            prev_low = swing_low_prices.iloc[-2]
+
+            if last_low < prev_low: # 確認創下更低的低點
+                last_low_index = swing_low_prices.index[-1]
+                relevant_highs = swing_high_prices[swing_high_prices.index < last_low_index]
+
+                if not relevant_highs.empty:
+                    choch_level = relevant_highs.iloc[-1]  # 這就是 LH 的價格
+                    if current_price > choch_level:
+                        choch_signals.append({
+                            'type': 'CHOCH_BULLISH',
+                            'price': current_price,
+                            'strength': self._calculate_structure_strength_fast(df),
+                            'description': f'突破前一較低高點(LH) ${choch_level:.6f}'
+                        })
+                        current_trend = self.BULLISH
+
+        # 4. 看跌CHoCH (Bearish CHoCH) - 從上升轉為下降
+        if len(swing_high_prices) >= 2 and not swing_low_prices.empty:
+            last_high = swing_high_prices.iloc[-1]
+            prev_high = swing_high_prices.iloc[-2]
+
+            if last_high > prev_high: # 確認創下更高的低點
+                last_high_index = swing_high_prices.index[-1]
+                relevant_lows = swing_low_prices[swing_low_prices.index < last_high_index]
+
+                if not relevant_lows.empty:
+                    choch_level = relevant_lows.iloc[-1] # 這是 HL 的價格
+                    if current_price < choch_level:
+                        choch_signals.append({
+                            'type': 'CHOCH_BEARISH',
+                            'price': current_price,
+                            'strength': self._calculate_structure_strength_fast(df),
+                            'description': f'跌破前一較高低點(HL) ${choch_level:.6f}'
+                        })
+                        current_trend = self.BEARISH
         
         return {
             'bos_signals': bos_signals,

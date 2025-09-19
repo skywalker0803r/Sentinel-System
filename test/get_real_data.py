@@ -4,76 +4,87 @@ import numpy as np
 from datetime import datetime
 import time
 
-def get_btc_data(symbol='BTC_USDT', interval='1h', limit=200):
+def get_btc_data(symbol='BTC_USDT', interval='6h', total_candles=5000):
     """
-    從Gate.io API獲取真實的比特幣數據
+    從Gate.io API獲取指定數量的歷史K線數據，通過分頁請求突破單次1000條的限制。
     
     Args:
-        symbol: 交易對 (默認: BTC_USDT)
-        interval: 時間間隔 (1m, 5m, 15m, 30m, 1h, 4h, 1d)
-        limit: 數據條數 (最大1000)
+        symbol (str): 交易對.
+        interval (str): 時間間隔 (e.g., '6h', '1d').
+        total_candles (int): 想要獲取的總K線數量.
     
     Returns:
-        pandas.DataFrame: 包含OHLCV數據的DataFrame
+        pandas.DataFrame: 包含OHLCV數據的DataFrame.
     """
+    print(f"=== 開始獲取 {total_candles} 條 {symbol} {interval} 的歷史數據... ===")
     
-    url = "https://api.gateio.ws/api/v4/spot/candlesticks"
-    params = {
-        'currency_pair': symbol,
-        'interval': interval,
-        'limit': limit
-    }
-    
-    try:
-        print(f"正在從Gate.io獲取 {symbol} {interval} 數據...")
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
+    all_data = []
+    limit_per_call = 1000 # API單次請求上限
+    end_timestamp = None # 從當前時間開始
+
+    while len(all_data) < total_candles:
+        remaining = total_candles - len(all_data)
+        current_limit = min(remaining, limit_per_call)
         
-        data = response.json()
-        
-        if not data:
-            raise ValueError("API返回空數據")
-        
-        # 將數據轉換為DataFrame
-        # Gate.io API返回格式: [timestamp, volume, close, high, low, open]
-        df_data = []
-        for candle in reversed(data):  # 反轉以獲得時間順序
-            timestamp = int(candle[0])
-            volume = float(candle[1])
-            close = float(candle[2])
-            high = float(candle[3])
-            low = float(candle[4])
-            open = float(candle[5])
+        url = "https://api.gateio.ws/api/v4/spot/candlesticks"
+        params = {
+            'currency_pair': symbol,
+            'interval': interval,
+            'limit': current_limit
+        }
+        if end_timestamp:
+            params['to'] = end_timestamp
+
+        try:
+            print(f"發起請求: 獲取 {current_limit} 條數據 (已獲取 {len(all_data)}/{total_candles})...")
+            response = requests.get(url, params=params, timeout=20)
+            response.raise_for_status()
             
-            df_data.append({
-                'time': pd.to_datetime(timestamp, unit='s'),
-                'open': open,
-                'high': high,
-                'low': low,
-                'close': close,
-                'volume': volume
-            })
-        
-        df = pd.DataFrame(df_data)
-        
-        # 確保數據按時間排序
-        df = df.sort_values('time').reset_index(drop=True)
-        
-        print(f"✅ 成功獲取 {len(df)} 條數據")
+            chunk = response.json()
+            if not chunk:
+                print("API返回空數據，已到達最早的歷史記錄。")
+                break
+            
+            all_data.extend(chunk)
+            
+            oldest_timestamp_in_chunk = int(chunk[-1][0])
+            end_timestamp = oldest_timestamp_in_chunk - 1
+
+            time.sleep(1)
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ API請求失敗: {e}")
+            print("將使用備用模擬數據...")
+            return create_fallback_data(total_candles)
+        except Exception as e:
+            print(f"❌ 數據處理錯誤: {e}")
+            print("將使用備用模擬數據...")
+            return create_fallback_data(total_candles)
+
+    if not all_data:
+        print("❌ 未能獲取任何數據，將使用備用模擬數據。")
+        return create_fallback_data(total_candles)
+
+    df_data = []
+    for candle in all_data:
+        df_data.append({
+            'time': pd.to_datetime(int(candle[0]), unit='s'),
+            'volume': float(candle[1]),
+            'close': float(candle[2]),
+            'high': float(candle[3]),
+            'low': float(candle[4]),
+            'open': float(candle[5])
+        })
+    
+    df = pd.DataFrame(df_data)
+    df = df.drop_duplicates(subset='time').sort_values('time').reset_index(drop=True)
+    
+    print(f"\n✅ 成功獲取並整理了 {len(df)} 條數據。")
+    if not df.empty:
         print(f"時間範圍: {df['time'].iloc[0]} 到 {df['time'].iloc[-1]}")
         print(f"價格範圍: ${df['low'].min():.2f} - ${df['high'].max():.2f}")
-        
-        return df
-        
-    except requests.exceptions.RequestException as e:
-        print(f"❌ API請求失敗: {e}")
-        print("使用備用模擬數據...")
-        return create_fallback_data(limit)
     
-    except Exception as e:
-        print(f"❌ 數據處理錯誤: {e}")
-        print("使用備用模擬數據...")
-        return create_fallback_data(limit)
+    return df
 
 def create_fallback_data(n=200):
     """
@@ -82,14 +93,11 @@ def create_fallback_data(n=200):
     print("正在創建備用模擬數據...")
     
     np.random.seed(42)
-    price_base = 45000  # BTC基準價格
-    
-    # 生成真實的價格走勢
-    returns = np.random.normal(0.0005, 0.02, n)  # 小幅上漲趨勢
+    price_base = 45000
+    returns = np.random.normal(0.0005, 0.02, n)
     price_changes = np.cumprod(1 + returns)
     closes = price_base * price_changes
     
-    # 生成OHLC
     opens = np.zeros(n)
     highs = np.zeros(n)
     lows = np.zeros(n)
@@ -101,19 +109,17 @@ def create_fallback_data(n=200):
     for i in range(n):
         daily_range = abs(closes[i] - opens[i]) + closes[i] * np.random.uniform(0.005, 0.015)
         
-        if closes[i] > opens[i]:  # 陽線
+        if closes[i] > opens[i]:
             highs[i] = closes[i] + np.random.uniform(0.1, 0.4) * daily_range
             lows[i] = opens[i] - np.random.uniform(0.1, 0.3) * daily_range
-        else:  # 陰線
+        else:
             highs[i] = opens[i] + np.random.uniform(0.1, 0.3) * daily_range
             lows[i] = closes[i] - np.random.uniform(0.1, 0.4) * daily_range
     
-    # 確保OHLC邏輯正確
     for i in range(n):
         highs[i] = max(highs[i], opens[i], closes[i])
         lows[i] = min(lows[i], opens[i], closes[i])
     
-    # 生成成交量
     volumes = np.random.lognormal(12, 0.4, n)
     
     df = pd.DataFrame({
@@ -129,11 +135,10 @@ def create_fallback_data(n=200):
     return df
 
 if __name__ == "__main__":
-    # 測試數據獲取
-    df = get_btc_data('BTC_USDT', '1h', 100)
-    print("\n數據樣本:")
-    print(df.head())
-    print("\n數據統計:")
-    print(f"數據條數: {len(df)}")
-    print(f"價格範圍: ${df['low'].min():.2f} - ${df['high'].max():.2f}")
-    print(f"平均波動: {((df['high'] - df['low']) / df['close'] * 100).mean():.2f}%")
+    df = get_btc_data('BTC_USDT', '1h', 2500)
+    if df is not None:
+        print("\n數據樣本:")
+        print(df.head())
+        print(df.tail())
+        print("\n數據統計:")
+        print(f"數據條數: {len(df)}")

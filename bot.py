@@ -434,19 +434,23 @@ def calculate_signal_score(vegas_signal, smc_analysis, symbol, apr_data, price_s
             score += 15  # 反彈訊號較弱
             factors['vegas_bounce'] = 15
     
-    # SMC 市場結構分數 (0-25分)
+    # SMC 市場結構分數 (0-25分) - 僅判斷看漲BOS和看漲CHoCH
     if smc_analysis and 'market_structure' in smc_analysis:
         structure = smc_analysis['market_structure']
         
-        # BOS/CHoCH 確認
-        if structure['bos_signals']:
+        # 檢查是否有看漲BOS信號
+        bullish_bos_found = any(s['type'] == 'BOS_BULLISH' for s in structure.get('bos_signals', []))
+        if bullish_bos_found:
             score += 15
-            factors['smc_bos'] = 15
-            explosive_indicators.append('結構突破')
-        if structure['choch_signals']:
+            factors['smc_bos_bullish'] = 15
+            explosive_indicators.append('看漲結構突破')
+        
+        # 檢查是否有看漲CHoCH信號
+        bullish_choch_found = any(s['type'] == 'CHOCH_BULLISH' for s in structure.get('choch_signals', []))
+        if bullish_choch_found:
             score += 20  # 趨勢轉變更重要
-            factors['smc_choch'] = 20
-            explosive_indicators.append('趨勢轉變')
+            factors['smc_choch_bullish'] = 20
+            explosive_indicators.append('看漲趨勢轉變')
     
     # Order Blocks 分數 (0-15分)
     if smc_analysis and 'order_blocks' in smc_analysis:
